@@ -1,0 +1,12 @@
+name = "webrtc-signaling-worker"
+main = "index.js"
+compatibility_date = "2026-06-03"
+
+[durable_objects]
+bindings = [
+  { name = "SIGNALING_ROOM", class_name = "SignalingRoom" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["SignalingRoom"]
