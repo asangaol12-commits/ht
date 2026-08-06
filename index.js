@@ -1,12 +1,12 @@
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    
-    // Validasi apakah request berupa WebSocket
-    if (url.pathname === '/ws') {
+    const upgradeHeader = request.headers.get('Upgrade');
+
+    // Menerima path /ws ATAU request yang memiliki header Upgrade: websocket
+    if (url.pathname === '/ws' || (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket')) {
       const room = url.searchParams.get('room') || 'default-room';
       
-      // Arahkan koneksi ke Durable Objects berdasarkan ID Room
       let id = env.SIGNALING_ROOM.idFromName(room);
       let stub = env.SIGNALING_ROOM.get(id);
       
@@ -24,7 +24,6 @@ export class SignalingRoom {
   }
 
   async fetch(request) {
-    // Upgrade koneksi HTTP biasa menjadi WebSocket
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
@@ -40,7 +39,11 @@ export class SignalingRoom {
         // Broadcast pesan signaling ke SEMUA peer lain di room yang sama
         this.sessions.forEach(s => {
           if (s.socket !== server) {
-            s.socket.send(JSON.stringify(data));
+            try {
+              s.socket.send(JSON.stringify(data));
+            } catch (e) {
+              console.error("Gagal kirim pesan ke socket:", e);
+            }
           }
         });
       } catch (err) {
