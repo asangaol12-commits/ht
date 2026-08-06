@@ -1,5 +1,5 @@
 name = "ht"
-main = "index.ts"
+main = "index.js"
 compatibility_date = "2026-08-06"
 
 [durable_objects]
@@ -7,7 +7,6 @@ bindings = [
   { name = "SIGNALING_ROOM", class_name = "SignalingRoom" }
 ]
 
-# Tambahkan bagian ini untuk mengatasi error 10097:
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["SignalingRoom"]
