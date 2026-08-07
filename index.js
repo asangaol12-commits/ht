@@ -3,7 +3,7 @@ export default {
     const url = new URL(request.url);
     const upgradeHeader = request.headers.get('Upgrade');
 
-    // Langsung tangani jika itu permintaan WebSocket (tanpa harus cek pathname /ws)
+    // Langsung tangani jika itu permintaan WebSocket
     if (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket') {
       const room = url.searchParams.get('room') || 'default-room';
       
@@ -18,3 +18,62 @@ export default {
     return new Response('WebRTC Signaling Server is running!', { status: 200 });
   }
 };
+
+// PASTIKAN KATA KUNCI "export" ADA DI SINI
+export class SignalingRoom {
+  constructor(state, env) {
+    this.state = state;
+  }
+
+  async fetch(request) {
+    const upgradeHeader = request.headers.get('Upgrade');
+    if (!upgradeHeader || upgradeHeader.toLowerCase() !== 'websocket') {
+      return new Response('Expected Upgrade: websocket', { status: 426 });
+    }
+
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
+
+    this.state.acceptWebSocket(server);
+    console.log(`[CONNECT] Klien baru berhasil terhubung ke Room.`);
+
+    return new Response(null, {
+      status: 101,
+      webSocket: client,
+    });
+  }
+
+  async webSocketMessage(server, msg) {
+    try {
+      let messageStr = typeof msg === "string" ? msg : new TextDecoder().decode(msg);
+      
+      console.log("[MESSAGE] Pesan diterima:", messageStr);
+
+      let data = JSON.parse(messageStr);
+      let sockets = this.state.getWebSockets();
+
+      console.log(`[BROADCAST] Meneruskan pesan ke ${sockets.length - 1} klien lain di room.`);
+
+      for (let socket of sockets) {
+        if (socket !== server) {
+          try {
+            socket.send(JSON.stringify(data));
+          } catch (e) {
+            console.error("[ERROR] Gagal kirim pesan ke socket:", e);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[ERROR] Gagal parsing JSON / memproses pesan:", err, "Isi msg:", msg);
+    }
+  }
+
+  async webSocketClose(server, code, reason, wasClean) {
+    console.log(`[DISCONNECT] Klien terputus. Code: ${code}, Alasan: ${reason}`);
+    server.close(code, "Closed by server");
+  }
+
+  async webSocketError(server, error) {
+    console.error("[ERROR] WebSocket error terjadi:", error);
+  }
+}
