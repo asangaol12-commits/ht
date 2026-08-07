@@ -3,7 +3,6 @@ export default {
     const url = new URL(request.url);
     const upgradeHeader = request.headers.get('Upgrade');
 
-    // Menerima path /ws ATAU request yang memiliki header Upgrade: websocket
     if (url.pathname === '/ws' || (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket')) {
       const room = url.searchParams.get('room') || 'default-room';
       
@@ -20,44 +19,54 @@ export default {
 export class SignalingRoom {
   constructor(state, env) {
     this.state = state;
-    this.sessions = [];
+    // Memakai fitur state.getWebSockets() bawaan Cloudflare Durable Object agar lebih stabil
   }
 
   async fetch(request) {
+    const upgradeHeader = request.headers.get('Upgrade');
+    if (!upgradeHeader || upgradeHeader.toLowerCase() !== 'websocket') {
+      return new Response('Expected Upgrade: websocket', { status: 426 });
+    }
+
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
-    server.accept();
-    
-    let session = { socket: server };
-    this.sessions.push(session);
-
-    server.addEventListener('message', async (msg) => {
-      try {
-        let data = JSON.parse(msg.data);
-        
-        // Broadcast pesan signaling ke SEMUA peer lain di room yang sama
-        this.sessions.forEach(s => {
-          if (s.socket !== server) {
-            try {
-              s.socket.send(JSON.stringify(data));
-            } catch (e) {
-              console.error("Gagal kirim pesan ke socket:", e);
-            }
-          }
-        });
-      } catch (err) {
-        console.error("Gagal parsing JSON:", err);
-      }
-    });
-
-    server.addEventListener('close', () => {
-      this.sessions = this.sessions.filter(s => s !== session);
-    });
+    // Menerima WebSocket menggunakan state dari Cloudflare (Durable Object Hibernation compatible)
+    this.state.acceptWebSocket(server);
 
     return new Response(null, {
       status: 101,
       webSocket: client,
     });
+  }
+
+  async webSocketMessage(server, msg) {
+    try {
+      let data = JSON.parse(msg);
+      
+      // Ambil semua WebSocket yang terhubung ke room ini
+      let sockets = this.state.getWebSockets();
+
+      // Broadcast pesan signaling ke SEMUA peer lain di room yang sama
+      for (let socket of sockets) {
+        if (socket !== server) {
+          try {
+            socket.send(JSON.stringify(data));
+          } catch (e) {
+            console.error("Gagal kirim pesan ke socket:", e);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Gagal parsing JSON:", err);
+    }
+  }
+
+  async webSocketClose(server, code, reason, wasClean) {
+    server.close(code, "Closed by server");
+  }
+
+  async webSocketError(server, error) {
+    console.error("WebSocket error:", error);
   }
 }
