@@ -42,12 +42,14 @@ export class SignalingRoom {
 
   async webSocketMessage(server, msg) {
     try {
-      let data = JSON.parse(msg);
+      // Pastikan msg di-convert ke string dulu jika berbentuk string/Buffer
+      let messageStr = typeof msg === "string" ? msg : new TextDecoder().decode(msg);
       
-      // Ambil semua WebSocket yang terhubung ke room ini
+      console.log("Pesan mentah diterima:", messageStr); // Tambah log untuk dipantau di wrangler tail
+
+      let data = JSON.parse(messageStr);
       let sockets = this.state.getWebSockets();
 
-      // Broadcast pesan signaling ke SEMUA peer lain di room yang sama
       for (let socket of sockets) {
         if (socket !== server) {
           try {
@@ -58,15 +60,6 @@ export class SignalingRoom {
         }
       }
     } catch (err) {
-      console.error("Gagal parsing JSON:", err);
+      console.error("Gagal parsing JSON:", err, "Isi msg:", msg);
     }
   }
-
-  async webSocketClose(server, code, reason, wasClean) {
-    server.close(code, "Closed by server");
-  }
-
-  async webSocketError(server, error) {
-    console.error("WebSocket error:", error);
-  }
-}
