@@ -3,11 +3,8 @@ export default {
     const url = new URL(request.url);
     const upgradeHeader = request.headers.get('Upgrade');
 
-    // Langsung tangani jika itu permintaan WebSocket
     if (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket') {
       const room = url.searchParams.get('room') || 'default-room';
-      
-      console.log(`[HTTP] Permintaan WebSocket masuk untuk Room: ${room}`);
       
       let id = env.SIGNALING_ROOM.idFromName(room);
       let stub = env.SIGNALING_ROOM.get(id);
@@ -19,10 +16,11 @@ export default {
   }
 };
 
-// PASTIKAN KATA KUNCI "export" ADA DI SINI
 export class SignalingRoom {
   constructor(state, env) {
     this.state = state;
+    // Menyimpan socket siapa yang sedang aktif bicara (Floor Control)
+    this.currentSpeaker = null;
   }
 
   async fetch(request) {
@@ -46,14 +44,32 @@ export class SignalingRoom {
   async webSocketMessage(server, msg) {
     try {
       let messageStr = typeof msg === "string" ? msg : new TextDecoder().decode(msg);
-      
-      console.log("[MESSAGE] Pesan diterima:", messageStr);
-
       let data = JSON.parse(messageStr);
       let sockets = this.state.getWebSockets();
 
-      console.log(`[BROADCAST] Meneruskan pesan ke ${sockets.length - 1} klien lain di room.`);
+      // FLOOR CONTROL LOGIC:
+      // Jika pesan berupa "offer", artinya client ini mau mulai bicara (request mic)
+      if (data.type === "offer") {
+        if (this.currentSpeaker === null) {
+          this.currentSpeaker = server;
+          console.log("[FLOOR] Speaker dikunci oleh klien baru.");
+        } else if (this.currentSpeaker !== server) {
+          // Kalau sudah ada orang lain yang ngomong, abaikan offer ini
+          console.log("[FLOOR] Ditolak: Saluran sedang digunakan orang lain.");
+          return; 
+        }
+      }
 
+      // Jika client melepas PTT / selesai bicara (bisa dikirim pesan custom misal type: "release")
+      if (data.type === "release") {
+        if (this.currentSpeaker === server) {
+          this.currentSpeaker = null;
+          console.log("[FLOOR] Saluran dibebaskan (Mic dilepas).");
+        }
+        return;
+      }
+
+      // Broadcast normal untuk candidate/answer/offer yang diizinkan
       for (let socket of sockets) {
         if (socket !== server) {
           try {
@@ -64,16 +80,23 @@ export class SignalingRoom {
         }
       }
     } catch (err) {
-      console.error("[ERROR] Gagal parsing JSON / memproses pesan:", err, "Isi msg:", msg);
+      console.error("[ERROR] Gagal parsing JSON:", err);
     }
   }
 
   async webSocketClose(server, code, reason, wasClean) {
-    console.log(`[DISCONNECT] Klien terputus. Code: ${code}, Alasan: ${reason}`);
+    console.log(`[DISCONNECT] Klien terputus.`);
+    // Kalau yang putus adalah speaker aktif, bebaskan salurannya
+    if (this.currentSpeaker === server) {
+      this.currentSpeaker = null;
+    }
     server.close(code, "Closed by server");
   }
 
   async webSocketError(server, error) {
-    console.error("[ERROR] WebSocket error terjadi:", error);
+    console.error("[ERROR] WebSocket error:", error);
+    if (this.currentSpeaker === server) {
+      this.currentSpeaker = null;
+    }
   }
 }
