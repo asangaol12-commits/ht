@@ -3,8 +3,10 @@ export default {
     const url = new URL(request.url);
     const upgradeHeader = request.headers.get('Upgrade');
 
+    // Langsung tangani jika itu permintaan WebSocket
     if (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket') {
       const room = url.searchParams.get('room') || 'default-room';
+      
       console.log(`[HTTP] Permintaan WebSocket masuk untuk Room: ${room}`);
       
       let id = env.SIGNALING_ROOM.idFromName(room);
@@ -17,6 +19,7 @@ export default {
   }
 };
 
+// PASTIKAN KATA KUNCI "export" ADA DI SINI
 export class SignalingRoom {
   constructor(state, env) {
     this.state = state;
@@ -31,8 +34,7 @@ export class SignalingRoom {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
-    // DAFTARKAN SOCKET DENGAN TAG "room-client" AGAR BISA DIAMBIL KEMBALI
-    this.state.acceptWebSocket(server, ["room-client"]);
+    this.state.acceptWebSocket(server);
     console.log(`[CONNECT] Klien baru berhasil terhubung ke Room.`);
 
     return new Response(null, {
@@ -44,12 +46,11 @@ export class SignalingRoom {
   async webSocketMessage(server, msg) {
     try {
       let messageStr = typeof msg === "string" ? msg : new TextDecoder().decode(msg);
+      
       console.log("[MESSAGE] Pesan diterima:", messageStr);
 
       let data = JSON.parse(messageStr);
-      
-      // AMBIL SEMUA SOCKET BERDASARKAN TAG YANG TELAH DIDAFTARKAN
-      let sockets = this.state.getWebSockets("room-client");
+      let sockets = this.state.getWebSockets();
 
       console.log(`[BROADCAST] Meneruskan pesan ke ${sockets.length - 1} klien lain di room.`);
 
@@ -69,6 +70,7 @@ export class SignalingRoom {
 
   async webSocketClose(server, code, reason, wasClean) {
     console.log(`[DISCONNECT] Klien terputus. Code: ${code}, Alasan: ${reason}`);
+    server.close(code, "Closed by server");
   }
 
   async webSocketError(server, error) {
