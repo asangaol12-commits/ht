@@ -50,9 +50,12 @@ export class SignalingRoom {
       let data = JSON.parse(messageStr);
       let sockets = this.state.getWebSockets();
       
-      // Ambil ID pengirim
+      // Ambil ID pengirim, jika tidak ada (karena instance restart), buatkan secara otomatis
       let senderId = this.socketIds.get(server);
-      if (!senderId) return;
+      if (!senderId) {
+        senderId = "user_" + (this.counter++);
+        this.socketIds.set(server, senderId);
+      }
 
       // WAJIB: Sisipkan field 'from' agar HP penerima tahu pesan ini dari siapa
       data.from = senderId;
