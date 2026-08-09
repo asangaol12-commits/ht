@@ -5,10 +5,8 @@ export default {
 
     if (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket') {
       const room = url.searchParams.get('room') || 'default-room';
-      
       let id = env.SIGNALING_ROOM.idFromName(room);
       let stub = env.SIGNALING_ROOM.get(id);
-      
       return stub.fetch(request);
     }
 
@@ -19,8 +17,9 @@ export default {
 export class SignalingRoom {
   constructor(state, env) {
     this.state = state;
-    // Menyimpan socket siapa yang sedang aktif bicara (Floor Control)
-    this.currentSpeaker = null;
+    // Menyimpan mapping socket ke ID unik (agar setiap client punya 'from' ID)
+    this.socketIds = new Map();
+    this.counter = 1;
   }
 
   async fetch(request) {
@@ -33,7 +32,11 @@ export class SignalingRoom {
     const [client, server] = Object.values(pair);
 
     this.state.acceptWebSocket(server);
-    console.log(`[CONNECT] Klien baru berhasil terhubung ke Room.`);
+
+    // Berikan ID unik ke setiap client yang terhubung
+    const clientId = "user_" + (this.counter++);
+    this.socketIds.set(server, clientId);
+    console.log(`[CONNECT] Klien baru terhubung dengan ID: ${clientId}`);
 
     return new Response(null, {
       status: 101,
@@ -46,30 +49,15 @@ export class SignalingRoom {
       let messageStr = typeof msg === "string" ? msg : new TextDecoder().decode(msg);
       let data = JSON.parse(messageStr);
       let sockets = this.state.getWebSockets();
+      
+      // Ambil ID pengirim
+      let senderId = this.socketIds.get(server);
+      if (!senderId) return;
 
-      // FLOOR CONTROL LOGIC:
-      // Jika pesan berupa "press" atau "offer", artinya client ini mau mulai bicara (request mic)
-      if (data.type === "press" || data.type === "offer") {
-        if (this.currentSpeaker === null) {
-          this.currentSpeaker = server;
-          console.log("[FLOOR] Speaker dikunci oleh klien baru.");
-        } else if (this.currentSpeaker !== server) {
-          // Kalau sudah ada orang lain yang ngomong, abaikan
-          console.log("[FLOOR] Ditolak: Saluran sedang digunakan orang lain.");
-          return; 
-        }
-      }
+      // WAJIB: Sisipkan field 'from' agar HP penerima tahu pesan ini dari siapa
+      data.from = senderId;
 
-      // Jika client melepas PTT / selesai bicara
-      if (data.type === "release") {
-        if (this.currentSpeaker === server) {
-          this.currentSpeaker = null;
-          console.log("[FLOOR] Saluran dibebaskan (Mic dilepas).");
-        }
-        // Tanpa return agar pesan release ikut ter-broadcast ke socket lain
-      }
-
-      // Broadcast normal untuk candidate/answer/offer/release yang diizinkan
+      // Broadcast pesan ke SEMUA client lain di room yang sama
       for (let socket of sockets) {
         if (socket !== server) {
           try {
@@ -85,18 +73,15 @@ export class SignalingRoom {
   }
 
   async webSocketClose(server, code, reason, wasClean) {
-    console.log(`[DISCONNECT] Klien terputus.`);
-    // Kalau yang putus adalah speaker aktif, bebaskan salurannya
-    if (this.currentSpeaker === server) {
-      this.currentSpeaker = null;
-    }
+    let senderId = this.socketIds.get(server);
+    console.log(`[DISCONNECT] Klien terputus: ${senderId}`);
+    this.socketIds.delete(server);
     server.close(code, "Closed by server");
   }
 
   async webSocketError(server, error) {
-    console.error("[ERROR] WebSocket error:", error);
-    if (this.currentSpeaker === server) {
-      this.currentSpeaker = null;
-    }
+    let senderId = this.socketIds.get(server);
+    console.error(`[ERROR] WebSocket error pada ${senderId}:`, error);
+    this.socketIds.delete(server);
   }
 }
