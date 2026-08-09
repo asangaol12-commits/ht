@@ -3,36 +3,40 @@ export default {
     const url = new URL(request.url);
     const upgradeHeader = request.headers.get('Upgrade');
 
-    if (!upgradeHeader || upgradeHeader.toLowerCase() !== 'websocket') {
-      return new Response('WebRTC Signaling Server is running!', { status: 200 });
+    if (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket') {
+      const room = url.searchParams.get('room') || 'default-room';
+      let id = env.SIGNALING_ROOM.idFromName(room);
+      let stub = env.SIGNALING_ROOM.get(id);
+      return stub.fetch(request);
     }
 
-    const room = url.searchParams.get('room') || 'default-room';
-    let id = env.SIGNALING_ROOM.idFromName(room);
-    let stub = env.SIGNALING_ROOM.get(id);
-    
-    return stub.fetch(request);
+    return new Response('WebRTC Signaling Server is running!', { status: 200 });
   }
 };
 
 export class SignalingRoom {
   constructor(state, env) {
     this.state = state;
-    // Menggunakan tag/metadata bawaan Cloudflare untuk menyimpan ID socket
-    this.clientIds = new Map();
+    // Menyimpan mapping socket ke ID unik (agar setiap client punya 'from' ID)
+    this.socketIds = new Map();
     this.counter = 1;
   }
 
   async fetch(request) {
+    const upgradeHeader = request.headers.get('Upgrade');
+    if (!upgradeHeader || upgradeHeader.toLowerCase() !== 'websocket') {
+      return new Response('Expected Upgrade: websocket', { status: 426 });
+    }
+
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
-    // Menerima WebSocket di Durable Object
     this.state.acceptWebSocket(server);
 
+    // Berikan ID unik ke setiap client yang terhubung
     const clientId = "user_" + (this.counter++);
-    this.clientIds.set(server, clientId);
-    console.log(`[CONNECT] Klien terhubung: ${clientId}`);
+    this.socketIds.set(server, clientId);
+    console.log(`[CONNECT] Klien baru terhubung dengan ID: ${clientId}`);
 
     return new Response(null, {
       status: 101,
@@ -42,45 +46,42 @@ export class SignalingRoom {
 
   async webSocketMessage(server, msg) {
     try {
-      console.log(`[MESSAGE] Menerima pesan mentah:`, msg);
-      
       let messageStr = typeof msg === "string" ? msg : new TextDecoder().decode(msg);
       let data = JSON.parse(messageStr);
+      let sockets = this.state.getWebSockets();
       
-      let senderId = this.clientIds.get(server);
-      if (!senderId) {
-        senderId = "unknown";
-      }
+      // Ambil ID pengirim
+      let senderId = this.socketIds.get(server);
+      if (!senderId) return;
 
-      // Sisipkan pengirim
+      // WAJIB: Sisipkan field 'from' agar HP penerima tahu pesan ini dari siapa
       data.from = senderId;
 
-      let sockets = this.state.getWebSockets();
-      console.log(`[BROADCAST] Mengirim ke ${sockets.length} client di room ini.`);
-
-      // Broadcast ke semua client lain
+      // Broadcast pesan ke SEMUA client lain di room yang sama
       for (let socket of sockets) {
         if (socket !== server) {
           try {
             socket.send(JSON.stringify(data));
           } catch (e) {
-            console.error("[ERROR] Gagal kirim ke socket:", e);
+            console.error("[ERROR] Gagal kirim pesan ke socket:", e);
           }
         }
       }
     } catch (err) {
-      console.error("[ERROR] Gagal parsing/proses pesan:", err);
+      console.error("[ERROR] Gagal parsing JSON:", err);
     }
   }
 
   async webSocketClose(server, code, reason, wasClean) {
-    let senderId = this.clientIds.get(server);
+    let senderId = this.socketIds.get(server);
     console.log(`[DISCONNECT] Klien terputus: ${senderId}`);
-    this.clientIds.delete(server);
+    this.socketIds.delete(server);
+    server.close(code, "Closed by server");
   }
 
   async webSocketError(server, error) {
-    console.error("[ERROR] WebSocket error:", error);
-    this.clientIds.delete(server);
+    let senderId = this.socketIds.get(server);
+    console.error(`[ERROR] WebSocket error pada ${senderId}:`, error);
+    this.socketIds.delete(server);
   }
 }
