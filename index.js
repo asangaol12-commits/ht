@@ -48,28 +48,28 @@ export class SignalingRoom {
       let sockets = this.state.getWebSockets();
 
       // FLOOR CONTROL LOGIC:
-      // Jika pesan berupa "offer", artinya client ini mau mulai bicara (request mic)
-      if (data.type === "offer") {
+      // Jika pesan berupa "press" atau "offer", artinya client ini mau mulai bicara (request mic)
+      if (data.type === "press" || data.type === "offer") {
         if (this.currentSpeaker === null) {
           this.currentSpeaker = server;
           console.log("[FLOOR] Speaker dikunci oleh klien baru.");
         } else if (this.currentSpeaker !== server) {
-          // Kalau sudah ada orang lain yang ngomong, abaikan offer ini
+          // Kalau sudah ada orang lain yang ngomong, abaikan
           console.log("[FLOOR] Ditolak: Saluran sedang digunakan orang lain.");
           return; 
         }
       }
 
-      // Jika client melepas PTT / selesai bicara (bisa dikirim pesan custom misal type: "release")
+      // Jika client melepas PTT / selesai bicara
       if (data.type === "release") {
         if (this.currentSpeaker === server) {
           this.currentSpeaker = null;
           console.log("[FLOOR] Saluran dibebaskan (Mic dilepas).");
         }
-        return;
+        // Tanpa return agar pesan release ikut ter-broadcast ke socket lain
       }
 
-      // Broadcast normal untuk candidate/answer/offer yang diizinkan
+      // Broadcast normal untuk candidate/answer/offer/release yang diizinkan
       for (let socket of sockets) {
         if (socket !== server) {
           try {
