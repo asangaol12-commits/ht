@@ -26,11 +26,8 @@ export class SignalingRoom {
       return new Response('Expected Upgrade: websocket', { status: 426 });
     }
 
-    // Ambil parameter 'user' dari URL query string yang dikirim oleh Android
     const url = new URL(request.url);
     const requestedUser = url.searchParams.get('user');
-    
-    // Jika user kosong, fallback ke default
     const clientId = (requestedUser && requestedUser.trim() !== "") ? requestedUser : "anonymous";
 
     const pair = new WebSocketPair();
@@ -38,7 +35,6 @@ export class SignalingRoom {
 
     this.state.acceptWebSocket(server);
 
-    // Simpan ID yang dikirim oleh Android ke mapping socket
     this.socketIds.set(server, clientId);
     console.log(`[CONNECT] Klien terhubung dengan User ID: ${clientId}`);
 
@@ -54,10 +50,15 @@ export class SignalingRoom {
       let data = JSON.parse(messageStr);
       let sockets = this.state.getWebSockets();
       
-      // Ambil ID pengirim yang sudah diset saat koneksi awal
+      // FIX UTAMA: Perbarui identity jika payload JSON membawa 'userId' yang valid
+      if (data.userId && data.userId.trim() !== "" && data.userId !== "anonymous") {
+        this.socketIds.set(server, data.userId.trim());
+      }
+
+      // Ambil ID pengirim yang valid dari mapping terbaru
       let senderId = this.socketIds.get(server) || "anonymous";
 
-      // Sisipkan field 'from' menggunakan nama asli dari HP Android
+      // Sisipkan field 'from' menggunakan nama asli yang valid
       data.from = senderId;
 
       // Broadcast pesan ke SEMUA client lain di room yang sama
