@@ -17,9 +17,7 @@ export default {
 export class SignalingRoom {
   constructor(state, env) {
     this.state = state;
-    // Menyimpan mapping socket ke ID unik (agar setiap client punya 'from' ID)
     this.socketIds = new Map();
-    this.counter = 1;
   }
 
   async fetch(request) {
@@ -28,15 +26,21 @@ export class SignalingRoom {
       return new Response('Expected Upgrade: websocket', { status: 426 });
     }
 
+    // Ambil parameter 'user' dari URL query string yang dikirim oleh Android
+    const url = new URL(request.url);
+    const requestedUser = url.searchParams.get('user');
+    
+    // Jika user kosong, fallback ke default
+    const clientId = (requestedUser && requestedUser.trim() !== "") ? requestedUser : "anonymous";
+
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
     this.state.acceptWebSocket(server);
 
-    // Berikan ID unik ke setiap client yang terhubung
-    const clientId = "user_" + (this.counter++);
+    // Simpan ID yang dikirim oleh Android ke mapping socket
     this.socketIds.set(server, clientId);
-    console.log(`[CONNECT] Klien baru terhubung dengan ID: ${clientId}`);
+    console.log(`[CONNECT] Klien terhubung dengan User ID: ${clientId}`);
 
     return new Response(null, {
       status: 101,
@@ -50,14 +54,10 @@ export class SignalingRoom {
       let data = JSON.parse(messageStr);
       let sockets = this.state.getWebSockets();
       
-      // Ambil ID pengirim, jika tidak ada (karena instance restart), buatkan secara otomatis
-      let senderId = this.socketIds.get(server);
-      if (!senderId) {
-        senderId = "user_" + (this.counter++);
-        this.socketIds.set(server, senderId);
-      }
+      // Ambil ID pengirim yang sudah diset saat koneksi awal
+      let senderId = this.socketIds.get(server) || "anonymous";
 
-      // WAJIB: Sisipkan field 'from' agar HP penerima tahu pesan ini dari siapa
+      // Sisipkan field 'from' menggunakan nama asli dari HP Android
       data.from = senderId;
 
       // Broadcast pesan ke SEMUA client lain di room yang sama
