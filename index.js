@@ -10,7 +10,7 @@ export default {
       return stub.fetch(request);
     }
 
-    return new Response('WebRTC Signaling Server is running!', { status: 200 });
+    return new Response('WebRTC Walkie-Talkie Signaling Server is running!', { status: 200 });
   }
 };
 
@@ -36,7 +36,7 @@ export class SignalingRoom {
     this.state.acceptWebSocket(server);
 
     this.socketIds.set(server, clientId);
-    console.log(`[CONNECT] Klien terhubung dengan User ID: ${clientId}`);
+    console.log(`[CONNECT] Klien Walkie-Talkie terhubung: ${clientId}`);
 
     return new Response(null, {
       status: 101,
@@ -47,25 +47,35 @@ export class SignalingRoom {
   async webSocketMessage(server, msg) {
     try {
       let messageStr = typeof msg === "string" ? msg : new TextDecoder().decode(msg);
+      
+      // Batasi ukuran payload signaling agar tetap ringan (maksimal 4KB untuk teks/state PTT)
+      if (messageStr.length > 4096) {
+        return;
+      }
+
       let data = JSON.parse(messageStr);
       let sockets = this.state.getWebSockets();
       
-      // FIX UTAMA: Perbarui identity jika payload JSON membawa 'userId' yang valid
       if (data.userId && data.userId.trim() !== "" && data.userId !== "anonymous") {
         this.socketIds.set(server, data.userId.trim());
       }
 
-      // Ambil ID pengirim yang valid dari mapping terbaru
       let senderId = this.socketIds.get(server) || "anonymous";
-
-      // Sisipkan field 'from' menggunakan nama asli yang valid
       data.from = senderId;
 
-      // Broadcast pesan ke SEMUA client lain di room yang sama
+      // Filter ketat: Hanya izinkan signaling WebRTC dasar & state PTT (Push-to-Talk / Press)
+      const validTypes = ['offer', 'answer', 'candidate', 'join', 'leave', 'ptt-press', 'ptt-release'];
+      if (data.type && !validTypes.includes(data.type)) {
+        return; // Abaikan pesan di luar audio/PTT
+      }
+
+      let payload = JSON.stringify(data);
+
+      // Broadcast status press/release atau signaling audio ke client lain di room
       for (let socket of sockets) {
         if (socket !== server) {
           try {
-            socket.send(JSON.stringify(data));
+            socket.send(payload);
           } catch (e) {
             console.error("[ERROR] Gagal kirim pesan ke socket:", e);
           }
@@ -78,7 +88,7 @@ export class SignalingRoom {
 
   async webSocketClose(server, code, reason, wasClean) {
     let senderId = this.socketIds.get(server);
-    console.log(`[DISCONNECT] Klien terputus: ${senderId}`);
+    console.log(`[DISCONNECT] Klien Walkie-Talkie terputus: ${senderId}`);
     this.socketIds.delete(server);
     server.close(code, "Closed by server");
   }
