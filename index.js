@@ -48,7 +48,7 @@ export class SignalingRoom {
     try {
       let messageStr = typeof msg === "string" ? msg : new TextDecoder().decode(msg);
       
-      // Batasi ukuran payload signaling agar tetap ringan (maksimal 4KB untuk teks/state PTT)
+      // Batasi ukuran payload signaling agar tetap ringan (maksimal 4KB)
       if (messageStr.length > 4096) {
         return;
       }
@@ -56,22 +56,26 @@ export class SignalingRoom {
       let data = JSON.parse(messageStr);
       let sockets = this.state.getWebSockets();
       
+      // Perbarui identity jika payload JSON membawa 'userId' yang valid
       if (data.userId && data.userId.trim() !== "" && data.userId !== "anonymous") {
         this.socketIds.set(server, data.userId.trim());
       }
 
+      // Ambil ID pengirim yang valid dari mapping terbaru
       let senderId = this.socketIds.get(server) || "anonymous";
+
+      // Sisipkan field 'from' menggunakan nama asli yang valid
       data.from = senderId;
 
-      // Filter ketat: Hanya izinkan signaling WebRTC dasar & state PTT (Push-to-Talk / Press)
+      // Filter ketat: Hanya izinkan signaling WebRTC dasar & state PTT
       const validTypes = ['offer', 'answer', 'candidate', 'join', 'leave', 'ptt-press', 'ptt-release'];
       if (data.type && !validTypes.includes(data.type)) {
-        return; // Abaikan pesan di luar audio/PTT
+        return; 
       }
 
       let payload = JSON.stringify(data);
 
-      // Broadcast status press/release atau signaling audio ke client lain di room
+      // Broadcast pesan ke SEMUA client lain di room yang sama
       for (let socket of sockets) {
         if (socket !== server) {
           try {
