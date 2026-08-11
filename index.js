@@ -30,6 +30,9 @@ export class SignalingRoom {
     const url = new URL(request.url);
     const requestedUser = url.searchParams.get('user');
     
+    // Jika user kosong, gunakan fallback lain seperti "unknown-user"
+    const clientId = (requestedUser && requestedUser.trim() !== "") ? requestedUser : "user";
+
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
@@ -37,7 +40,8 @@ export class SignalingRoom {
 
     // Simpan ID yang dikirim oleh Android ke mapping socket
     this.socketIds.set(server, clientId);
-   
+    console.log(`[CONNECT] Klien terhubung dengan User ID: ${clientId}`);
+
     return new Response(null, {
       status: 101,
       webSocket: client,
@@ -50,6 +54,9 @@ export class SignalingRoom {
       let data = JSON.parse(messageStr);
       let sockets = this.state.getWebSockets();
       
+      // Ambil ID pengirim yang sudah diset saat koneksi awal
+      let senderId = this.socketIds.get(server) || "user";
+
       // Sisipkan field 'from' menggunakan nama asli dari HP Android
       data.from = senderId;
 
