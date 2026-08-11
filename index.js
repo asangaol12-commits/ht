@@ -17,7 +17,34 @@ export default {
 export class SignalingRoom {
   constructor(state, env) {
     this.state = state;
-    this.socketIds = new Map();
+    this.socketIds = new Map(); // Mapping dari socket -> clientId
+  }
+
+  // Fungsi helper untuk mengirim daftar user terbaru ke SEMUA client di room
+  broadcastRoomUsers() {
+    let sockets = this.state.getWebSockets();
+    let usersList = [];
+    
+    // Kumpulkan semua ID user yang unik/aktif
+    for (let socket of sockets) {
+      let userId = this.socketIds.get(socket);
+      if (userId) {
+        usersList.push(userId);
+      }
+    }
+
+    let payload = JSON.stringify({
+      type: "room_users",
+      users: usersList
+    });
+
+    for (let socket of sockets) {
+      try {
+        socket.send(payload);
+      } catch (e) {
+        console.error("[ERROR] Gagal kirim room_users:", e);
+      }
+    }
   }
 
   async fetch(request) {
@@ -26,11 +53,8 @@ export class SignalingRoom {
       return new Response('Expected Upgrade: websocket', { status: 426 });
     }
 
-    // Ambil parameter 'user' dari URL query string yang dikirim oleh Android
     const url = new URL(request.url);
     const requestedUser = url.searchParams.get('user');
-    
-    // Jika user kosong, gunakan fallback lain seperti "unknown-user"
     const clientId = (requestedUser && requestedUser.trim() !== "") ? requestedUser : "user";
 
     const pair = new WebSocketPair();
@@ -38,22 +62,25 @@ export class SignalingRoom {
 
     this.state.acceptWebSocket(server);
 
-    // Simpan ID yang dikirim oleh Android ke mapping socket
     this.socketIds.set(server, clientId);
     console.log(`[CONNECT] Klien terhubung dengan User ID: ${clientId}`);
+
+    // Update dan broadcast daftar user terbaru setelah ada yang masuk
+    this.broadcastRoomUsers();
 
     return new Response(null, {
       status: 101,
       webSocket: client,
     });
   }
-async webSocketMessage(server, msg) {
+
+  async webSocketMessage(server, msg) {
     try {
       let messageStr = typeof msg === "string" ? msg : new TextDecoder().decode(msg);
       let data = JSON.parse(messageStr);
       let sockets = this.state.getWebSockets();
 
-      // Broadcast pesan ke SEMUA client lain di room yang sama
+      // Broadcast pesan normal ke SEMUA client lain di room yang sama
       for (let socket of sockets) {
         if (socket !== server) {
           try {
@@ -72,6 +99,10 @@ async webSocketMessage(server, msg) {
     let senderId = this.socketIds.get(server);
     console.log(`[DISCONNECT] Klien terputus: ${senderId}`);
     this.socketIds.delete(server);
+    
+    // Update dan broadcast daftar user terbaru setelah ada yang keluar
+    this.broadcastRoomUsers();
+    
     server.close(code, "Closed by server");
   }
 
@@ -79,5 +110,8 @@ async webSocketMessage(server, msg) {
     let senderId = this.socketIds.get(server);
     console.error(`[ERROR] WebSocket error pada ${senderId}:`, error);
     this.socketIds.delete(server);
+    
+    // Update dan broadcast daftar user terbaru jika terjadi error koneksi
+    this.broadcastRoomUsers();
   }
 }
