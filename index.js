@@ -26,14 +26,18 @@ export class SignalingRoom {
       return new Response('Expected Upgrade: websocket', { status: 426 });
     }
 
+    // Ambil parameter 'user' dari URL query string yang dikirim oleh Android
     const url = new URL(request.url);
     const requestedUser = url.searchParams.get('user');
+    
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
-    this.state.acceptWebSocket(server);
-    this.socketIds.set(server, clientId);
-    console.log(`[CONNECT] Klien terhubung dengan User ID: ${clientId}`);
 
+    this.state.acceptWebSocket(server);
+
+    // Simpan ID yang dikirim oleh Android ke mapping socket
+    this.socketIds.set(server, clientId);
+   
     return new Response(null, {
       status: 101,
       webSocket: client,
@@ -46,8 +50,10 @@ export class SignalingRoom {
       let data = JSON.parse(messageStr);
       let sockets = this.state.getWebSockets();
       
+      // Sisipkan field 'from' menggunakan nama asli dari HP Android
       data.from = senderId;
 
+      // Broadcast pesan ke SEMUA client lain di room yang sama
       for (let socket of sockets) {
         if (socket !== server) {
           try {
