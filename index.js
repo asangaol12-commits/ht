@@ -47,18 +47,11 @@ export class SignalingRoom {
       webSocket: client,
     });
   }
-
-  async webSocketMessage(server, msg) {
+async webSocketMessage(server, msg) {
     try {
       let messageStr = typeof msg === "string" ? msg : new TextDecoder().decode(msg);
       let data = JSON.parse(messageStr);
       let sockets = this.state.getWebSockets();
-      
-      // Ambil ID pengirim yang sudah diset saat koneksi awal
-      let senderId = this.socketIds.get(server) || "user";
-
-      // Sisipkan field 'from' menggunakan nama asli dari HP Android
-      data.from = senderId;
 
       // Broadcast pesan ke SEMUA client lain di room yang sama
       for (let socket of sockets) {
