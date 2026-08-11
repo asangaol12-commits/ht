@@ -80,11 +80,20 @@ export class SignalingRoom {
       let data = JSON.parse(messageStr);
       let sockets = this.state.getWebSockets();
 
-      // Broadcast pesan normal ke SEMUA client lain di room yang sama
       for (let socket of sockets) {
         if (socket !== server) {
           try {
-            socket.send(JSON.stringify(data));
+            // Jika pesan memiliki target khusus (seperti offer, answer, candidate)
+            if (data.target) {
+              let targetUserId = this.socketIds.get(socket);
+              // Kirim HANYA ke socket yang user ID-nya sesuai dengan target
+              if (targetUserId === data.target) {
+                socket.send(JSON.stringify(data));
+              }
+            } else {
+              // Untuk pesan broadcast umum tanpa target (press, release, join, dll)
+              socket.send(JSON.stringify(data));
+            }
           } catch (e) {
             console.error("[ERROR] Gagal kirim pesan ke socket:", e);
           }
