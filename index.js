@@ -10,7 +10,7 @@ export default {
       return stub.fetch(request);
     }
 
-    return new Response('WebRTC Walkie-Talkie Signaling Server is running!', { status: 200 });
+    return new Response('not found', { status: 200 });
   }
 };
 
@@ -26,8 +26,11 @@ export class SignalingRoom {
       return new Response('Expected Upgrade: websocket', { status: 426 });
     }
 
+    // Ambil parameter 'user' dari URL query string yang dikirim oleh Android
     const url = new URL(request.url);
     const requestedUser = url.searchParams.get('user');
+    
+    // Jika user kosong, fallback ke default
     const clientId = (requestedUser && requestedUser.trim() !== "") ? requestedUser : "anonymous";
 
     const pair = new WebSocketPair();
@@ -35,8 +38,9 @@ export class SignalingRoom {
 
     this.state.acceptWebSocket(server);
 
+    // Simpan ID yang dikirim oleh Android ke mapping socket
     this.socketIds.set(server, clientId);
-    console.log(`[CONNECT] Klien Walkie-Talkie terhubung: ${clientId}`);
+    console.log(`[CONNECT] Klien terhubung dengan User ID: ${clientId}`);
 
     return new Response(null, {
       status: 101,
@@ -47,39 +51,20 @@ export class SignalingRoom {
   async webSocketMessage(server, msg) {
     try {
       let messageStr = typeof msg === "string" ? msg : new TextDecoder().decode(msg);
-      
-      // Batasi ukuran payload signaling agar tetap ringan (maksimal 4KB)
-      if (messageStr.length > 4096) {
-        return;
-      }
-
       let data = JSON.parse(messageStr);
       let sockets = this.state.getWebSockets();
       
-      // Perbarui identity jika payload JSON membawa 'userId' yang valid
-      if (data.userId && data.userId.trim() !== "" && data.userId !== "anonymous") {
-        this.socketIds.set(server, data.userId.trim());
-      }
-
-      // Ambil ID pengirim yang valid dari mapping terbaru
+      // Ambil ID pengirim yang sudah diset saat koneksi awal
       let senderId = this.socketIds.get(server) || "anonymous";
 
-      // Sisipkan field 'from' menggunakan nama asli yang valid
+      // Sisipkan field 'from' menggunakan nama asli dari HP Android
       data.from = senderId;
-
-      // Filter ketat: Hanya izinkan signaling WebRTC dasar & state PTT
-      const validTypes = ['offer', 'answer', 'candidate', 'join', 'leave', 'ptt-press', 'ptt-release'];
-      if (data.type && !validTypes.includes(data.type)) {
-        return; 
-      }
-
-      let payload = JSON.stringify(data);
 
       // Broadcast pesan ke SEMUA client lain di room yang sama
       for (let socket of sockets) {
         if (socket !== server) {
           try {
-            socket.send(payload);
+            socket.send(JSON.stringify(data));
           } catch (e) {
             console.error("[ERROR] Gagal kirim pesan ke socket:", e);
           }
@@ -92,7 +77,7 @@ export class SignalingRoom {
 
   async webSocketClose(server, code, reason, wasClean) {
     let senderId = this.socketIds.get(server);
-    console.log(`[DISCONNECT] Klien Walkie-Talkie terputus: ${senderId}`);
+    console.log(`[DISCONNECT] Klien terputus: ${senderId}`);
     this.socketIds.delete(server);
     server.close(code, "Closed by server");
   }
