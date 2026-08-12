@@ -1,77 +1,69 @@
 export default {
-  async fetch(request, env, ctx) {
-    const upgradeHeader = request.headers.get("Upgrade");
-    if (!upgradeHeader || upgradeHeader !== "websocket") {
-      return new Response("Expected Upgrade: websocket", { status: 426 });
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const upgradeHeader = request.headers.get('Upgrade');
+
+    if (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket') {
+      const room = url.searchParams.get('room') || 'default-room';
+      let id = env.SIGNALING_ROOM.idFromName(room);
+      let stub = env.SIGNALING_ROOM.get(id);
+      return stub.fetch(request);
     }
 
-    const url = new URL(request.url);
-    const roomId = url.searchParams.get("room") || "default-room";
-
-    // Arahkan request WebSocket ke Durable Object berdasarkan Nama/ID Room
-    let id = env.SignalingRoom.idFromName(roomId);
-    let stub = env.SignalingRoom.get(id);
-
-    return stub.fetch(request);
+    return new Response('not found', { status: 200 });
   }
 };
 
-// Definisi Durable Object untuk menghandle Room & WebSocket secara Stateful
 export class SignalingRoom {
   constructor(state, env) {
     this.state = state;
-    this.env = env;
-    this.sessions = new Set();
+    this.socketIds = new Map();
+  }
+
+  broadcastRoomUsers() {
+    let sockets = this.state.getWebSockets();
+    let usersList = [];
+    
+    for (let socket of sockets) {
+      let userId = this.socketIds.get(socket);
+      if (userId) {
+        usersList.push(userId);
+      }
+    }
+
+    let payload = JSON.stringify({
+      type: "room_users",
+      users: usersList
+    });
+
+    for (let socket of sockets) {
+      try {
+        socket.send(payload);
+      } catch (e) {
+        console.error("[ERROR] Gagal kirim room_users:", e);
+      }
+    }
   }
 
   async fetch(request) {
-    const webSocketPair = new WebSocketPair();
-    const [client, server] = Object.values(webSocketPair);
-
-    server.accept();
+    const upgradeHeader = request.headers.get('Upgrade');
+    if (!upgradeHeader || upgradeHeader.toLowerCase() !== 'websocket') {
+      return new Response('Expected Upgrade: websocket', { status: 426 });
+    }
 
     const url = new URL(request.url);
-    const userId = url.searchParams.get("user") || "Anonymous";
-    const uniqueUid = url.searchParams.get("uid") || "";
-    const roomId = url.searchParams.get("room") || "default-room";
+    const requestedUser = url.searchParams.get('user');
+    const clientId = (requestedUser && requestedUser.trim() !== "") ? requestedUser : "user";
 
-    server.meta = { userId, uid: uniqueUid, roomId };
-    this.sessions.add(server);
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
 
-    console.log(`[CONNECT] User: ${userId} bergabung ke Durable Room: ${roomId}`);
+    this.state.acceptWebSocket(server);
+
+    this.socketIds.set(server, clientId);
+    console.log(`[CONNECT] Klien terhubung dengan User ID: ${clientId}`);
+
     this.broadcastRoomUsers();
-
-    server.addEventListener("message", (event) => {
-      try {
-        const rawData = event.data;
-        const msg = JSON.parse(rawData);
-        const targetUser = msg.target;
-
-        for (let clientSocket of this.sessions) {
-          if (clientSocket === server) continue;
-
-          if (targetUser) {
-            if (clientSocket.meta.userId === targetUser || clientSocket.meta.uid === targetUser) {
-              clientSocket.send(rawData);
-              break;
-            }
-          } else {
-            clientSocket.send(rawData);
-          }
-        }
-      } catch (err) {
-        console.error(`[ERROR] Gagal memproses pesan:`, err);
-      }
-    });
-
-    const cleanup = () => {
-      console.log(`[DISCONNECT] User: ${userId} keluar dari room.`);
-      this.sessions.delete(server);
-      this.broadcastRoomUsers();
-    };
-
-    server.addEventListener("close", cleanup);
-    server.addEventListener("error", cleanup);
 
     return new Response(null, {
       status: 101,
@@ -79,27 +71,53 @@ export class SignalingRoom {
     });
   }
 
-  broadcastRoomUsers() {
-    const usersList = [];
-    for (let clientSocket of this.sessions) {
-      if (clientSocket.meta && clientSocket.meta.userId) {
-        if (!usersList.includes(clientSocket.meta.userId)) {
-          usersList.push(clientSocket.meta.userId);
+  async webSocketMessage(server, msg) {
+    try {
+      let messageStr = typeof msg === "string" ? msg : new TextDecoder().decode(msg);
+      let data = JSON.parse(messageStr);
+      let sockets = this.state.getWebSockets();
+
+      let targetUser = data.target;
+
+      for (let socket of sockets) {
+        if (socket !== server) {
+          try {
+            if (targetUser) {
+              let recipientId = this.socketIds.get(socket);
+              if (recipientId === targetUser) {
+                socket.send(JSON.stringify(data));
+                break;
+              }
+            } else {
+              socket.send(JSON.stringify(data));
+            }
+          } catch (e) {
+            console.error("[ERROR] Gagal kirim pesan ke socket:", e);
+          }
         }
       }
+    } catch (err) {
+      console.error("[ERROR] Gagal parsing JSON:", err);
     }
+  }
 
-    const payload = JSON.stringify({
-      type: "room_users",
-      users: usersList,
-    });
+  async webSocketClose(server, code, reason, wasClean) {
+    let senderId = this.socketIds.get(server);
+    console.log(`[DISCONNECT] Klien terputus: ${senderId}`);
+    this.socketIds.delete(server);
+    
+    this.broadcastRoomUsers();
+    
+    try {
+      server.close(code, "Closed by server");
+    } catch (e) {}
+  }
 
-    for (let clientSocket of this.sessions) {
-      try {
-        clientSocket.send(payload);
-      } catch (e) {
-        console.error(`[BROADCAST ERROR]`, e);
-      }
-    }
+  async webSocketError(server, error) {
+    let senderId = this.socketIds.get(server);
+    console.error(`[ERROR] WebSocket error pada ${senderId}:`, error);
+    this.socketIds.delete(server);
+    
+    this.broadcastRoomUsers();
   }
 }
