@@ -1,117 +1,119 @@
+const rooms = new Map();
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
+    const upgradeHeader = request.headers.get("Upgrade");
+    if (!upgradeHeader || upgradeHeader !== "websocket") {
+      return new Response("Expected Upgrade: websocket", { status: 426 });
+    }
+
     const url = new URL(request.url);
-    const upgradeHeader = request.headers.get('Upgrade');
+    const roomId = url.searchParams.get("room") || "default-room";
+    const userId = url.searchParams.get("user") || "Anonymous";
+    const uniqueUid = url.searchParams.get("uid") || "";
 
-    if (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket') {
-      const room = url.searchParams.get('room') || 'default-room';
-      let id = env.SIGNALING_ROOM.idFromName(room);
-      let stub = env.SIGNALING_ROOM.get(id);
-      return stub.fetch(request);
+    // Terima koneksi WebSocket menggunakan WebSockets API Cloudflare
+    const webSocketPair = new WebSocketPair();
+    const [client, server] = Object.values(webSocketPair);
+
+    server.accept();
+
+    // Attach metadata ke objek server WebSocket agar mudah dikenali
+    server.meta = {
+      userId: userId,
+      uid: uniqueUid,
+      roomId: roomId,
+    };
+
+    // Tambahkan client ke dalam room yang sesuai
+    if (!rooms.has(roomId)) {
+      rooms.set(roomId, new Set());
     }
+    rooms.get(roomId).add(server);
 
-    return new Response('not found', { status: 200 });
-  }
-};
-
-export class SignalingRoom {
-  constructor(state, env) {
-    this.state = state;
-    this.socketIds = new Map(); // Mapping dari socket -> clientId
-  }
-
-  // Fungsi helper untuk mengirim daftar user terbaru ke SEMUA client di room
-  broadcastRoomUsers() {
-    let sockets = this.state.getWebSockets();
-    let usersList = [];
+    console.log(`[CONNECT] User: ${userId} (UID: ${uniqueUid}) bergabung ke Room: ${roomId}`);
     
-    // Kumpulkan semua ID user yang unik/aktif
-    for (let socket of sockets) {
-      let userId = this.socketIds.get(socket);
-      if (userId) {
-        usersList.push(userId);
-      }
-    }
+    // Broadcast daftar terbaru user ke semua peserta di room tersebut
+    broadcastRoomUsers(roomId);
 
-    let payload = JSON.stringify({
-      type: "room_users",
-      users: usersList
+    // Event handler ketika menerima pesan dari aplikasi Android client
+    server.addEventListener("message", (event) => {
+      try {
+        const rawData = event.data;
+        const msg = JSON.parse(rawData);
+        const targetUser = msg.target; // Jika ada target spesifik (untuk WebRTC P2P)
+
+        // Handle pesan press / release / offer / answer / candidate
+        const roomClients = rooms.get(roomId);
+        if (!roomClients) return;
+
+        for (let clientSocket of roomClients) {
+          // Jangan kirim balik pesan ke pengirimnya sendiri
+          if (clientSocket === server) continue;
+
+          // Jika pesan bersifat targeted (seperti SDP offer/answer/candidate yang punya field target)
+          if (targetUser) {
+            if (clientSocket.meta.userId === targetUser || clientSocket.meta.uid === targetUser) {
+              clientSocket.send(rawData);
+              break;
+            }
+          } else {
+            // Jika pesan broadcast umum (seperti "press" atau "release" PTT ke seluruh room)
+            clientSocket.send(rawData);
+          }
+        }
+      } catch (err) {
+        console.error(`[ERROR] Gagal memproses pesan WebSocket:`, err);
+      }
     });
 
-    for (let socket of sockets) {
-      try {
-        socket.send(payload);
-      } catch (e) {
-        console.error("[ERROR] Gagal kirim room_users:", e);
+    // Event handler ketika koneksi terputus (Close / Error)
+    const cleanup = () => {
+      console.log(`[DISCONNECT] User: ${userId} keluar dari Room: ${roomId}`);
+      const roomClients = rooms.get(roomId);
+      if (roomClients) {
+        roomClients.delete(server);
+        if (roomClients.size === 0) {
+          rooms.delete(roomId); // Hapus room jika kosong untuk menghemat memori
+        } else {
+          broadcastRoomUsers(roomId); // Perbarui daftar user untuk peserta yang tersisa
+        }
       }
-    }
-  }
+    };
 
-  async fetch(request) {
-    const upgradeHeader = request.headers.get('Upgrade');
-    if (!upgradeHeader || upgradeHeader.toLowerCase() !== 'websocket') {
-      return new Response('Expected Upgrade: websocket', { status: 426 });
-    }
-
-    const url = new URL(request.url);
-    const requestedUser = url.searchParams.get('user');
-    const clientId = (requestedUser && requestedUser.trim() !== "") ? requestedUser : "user";
-
-    const pair = new WebSocketPair();
-    const [client, server] = Object.values(pair);
-
-    this.state.acceptWebSocket(server);
-
-    this.socketIds.set(server, clientId);
-    console.log(`[CONNECT] Klien terhubung dengan User ID: ${clientId}`);
-
-    // Update dan broadcast daftar user terbaru setelah ada yang masuk
-    this.broadcastRoomUsers();
+    server.addEventListener("close", cleanup);
+    server.addEventListener("error", cleanup);
 
     return new Response(null, {
       status: 101,
       webSocket: client,
     });
-  }
+  },
+};
 
-  async webSocketMessage(server, msg) {
-    try {
-      let messageStr = typeof msg === "string" ? msg : new TextDecoder().decode(msg);
-      let data = JSON.parse(messageStr);
-      let sockets = this.state.getWebSockets();
+// Fungsi helper untuk mengirim daftar user aktif dalam satu room ke semua client terkait
+function broadcastRoomUsers(roomId) {
+  const roomClients = rooms.get(roomId);
+  if (!roomClients) return;
 
-      // Broadcast pesan normal ke SEMUA client lain di room yang sama
-      for (let socket of sockets) {
-        if (socket !== server) {
-          try {
-            socket.send(JSON.stringify(data));
-          } catch (e) {
-            console.error("[ERROR] Gagal kirim pesan ke socket:", e);
-          }
-        }
+  const usersList = [];
+  for (let clientSocket of roomClients) {
+    if (clientSocket.meta && clientSocket.meta.userId) {
+      if (!usersList.includes(clientSocket.meta.userId)) {
+        usersList.push(clientSocket.meta.userId);
       }
-    } catch (err) {
-      console.error("[ERROR] Gagal parsing JSON:", err);
     }
   }
 
-  async webSocketClose(server, code, reason, wasClean) {
-    let senderId = this.socketIds.get(server);
-    console.log(`[DISCONNECT] Klien terputus: ${senderId}`);
-    this.socketIds.delete(server);
-    
-    // Update dan broadcast daftar user terbaru setelah ada yang keluar
-    this.broadcastRoomUsers();
-    
-    server.close(code, "Closed by server");
-  }
+  const payload = JSON.stringify({
+    type: "room_users",
+    users: usersList,
+  });
 
-  async webSocketError(server, error) {
-    let senderId = this.socketIds.get(server);
-    console.error(`[ERROR] WebSocket error pada ${senderId}:`, error);
-    this.socketIds.delete(server);
-    
-    // Update dan broadcast daftar user terbaru jika terjadi error koneksi
-    this.broadcastRoomUsers();
+  for (let clientSocket of roomClients) {
+    try {
+      clientSocket.send(payload);
+    } catch (e) {
+      console.error(`[BROADCAST ERROR] Gagal mengirim room_users ke client:`, e);
+    }
   }
 }
