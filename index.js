@@ -24,7 +24,7 @@ export default {
     }
 
     // Response default jika tidak menggunakan WebSocket
-    return new Response('HT Walkie-Talkie Signaling Server is running.', { status: 200 });
+    return new Response('not-found', { status: 200 });
   }
 };
 
