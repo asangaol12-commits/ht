@@ -17,13 +17,15 @@ export default {
 export class SignalingRoom {
   constructor(state, env) {
     this.state = state;
-    this.socketIds = new Map();
+    this.socketIds = new Map(); // Mapping dari socket -> clientId
   }
 
+  // Fungsi helper untuk mengirim daftar user terbaru ke SEMUA client di room
   broadcastRoomUsers() {
     let sockets = this.state.getWebSockets();
     let usersList = [];
     
+    // Kumpulkan semua ID user yang unik/aktif
     for (let socket of sockets) {
       let userId = this.socketIds.get(socket);
       if (userId) {
@@ -63,6 +65,7 @@ export class SignalingRoom {
     this.socketIds.set(server, clientId);
     console.log(`[CONNECT] Klien terhubung dengan User ID: ${clientId}`);
 
+    // Update dan broadcast daftar user terbaru setelah ada yang masuk
     this.broadcastRoomUsers();
 
     return new Response(null, {
@@ -77,18 +80,18 @@ export class SignalingRoom {
       let data = JSON.parse(messageStr);
       let sockets = this.state.getWebSockets();
 
-      let targetUser = data.target;
-
       for (let socket of sockets) {
         if (socket !== server) {
           try {
-            if (targetUser) {
-              let recipientId = this.socketIds.get(socket);
-              if (recipientId === targetUser) {
+            // Jika pesan memiliki target khusus (seperti offer, answer, candidate)
+            if (data.target) {
+              let targetUserId = this.socketIds.get(socket);
+              // Kirim HANYA ke socket yang user ID-nya sesuai dengan target
+              if (targetUserId === data.target) {
                 socket.send(JSON.stringify(data));
-                break;
               }
             } else {
+              // Untuk pesan broadcast umum tanpa target (press, release, join, dll)
               socket.send(JSON.stringify(data));
             }
           } catch (e) {
@@ -106,11 +109,10 @@ export class SignalingRoom {
     console.log(`[DISCONNECT] Klien terputus: ${senderId}`);
     this.socketIds.delete(server);
     
+    // Update dan broadcast daftar user terbaru setelah ada yang keluar
     this.broadcastRoomUsers();
     
-    try {
-      server.close(code, "Closed by server");
-    } catch (e) {}
+    server.close(code, "Closed by server");
   }
 
   async webSocketError(server, error) {
@@ -118,6 +120,7 @@ export class SignalingRoom {
     console.error(`[ERROR] WebSocket error pada ${senderId}:`, error);
     this.socketIds.delete(server);
     
+    // Update dan broadcast daftar user terbaru jika terjadi error koneksi
     this.broadcastRoomUsers();
   }
 }
