@@ -17,6 +17,7 @@ export default {
 export class SignalingRoom {
   constructor(state, env) {
     this.state = state;
+    this.socketIds = new Map();
   }
 
   broadcastRoomUsers() {
@@ -24,9 +25,9 @@ export class SignalingRoom {
     let usersList = [];
     
     for (let socket of sockets) {
-      let tags = this.state.getTags(socket);
-      if (tags && tags.length > 0) {
-        usersList.push(tags[0]);
+      let userId = this.socketIds.get(socket);
+      if (userId) {
+        usersList.push(userId);
       }
     }
 
@@ -52,31 +53,14 @@ export class SignalingRoom {
 
     const url = new URL(request.url);
     const requestedUser = url.searchParams.get('user');
-    let baseClientId = (requestedUser && requestedUser.trim() !== "") ? requestedUser.trim() : "user";
-
-    // Pencegahan duplikasi nama user dalam satu room
-    let sockets = this.state.getWebSockets();
-    let existingUsers = new Set();
-    for (let socket of sockets) {
-      let tags = this.state.getTags(socket);
-      if (tags && tags[0]) {
-        existingUsers.add(tags[0]);
-      }
-    }
-
-    let clientId = baseClientId;
-    let counter = 1;
-    while (existingUsers.has(clientId)) {
-      counter++;
-      clientId = `${baseClientId}_${counter}`;
-    }
+    const clientId = (requestedUser && requestedUser.trim() !== "") ? requestedUser : "user";
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
-    // Menyimpan clientId ke dalam tag WebSocket Durable Object
-    this.state.acceptWebSocket(server, [clientId]);
+    this.state.acceptWebSocket(server);
 
+    this.socketIds.set(server, clientId);
     console.log(`[CONNECT] Klien terhubung dengan User ID: ${clientId}`);
 
     this.broadcastRoomUsers();
@@ -90,28 +74,19 @@ export class SignalingRoom {
   async webSocketMessage(server, msg) {
     try {
       let messageStr = typeof msg === "string" ? msg : new TextDecoder().decode(msg);
-      let data;
-      
-      try {
-        data = JSON.parse(messageStr);
-      } catch (parseErr) {
-        console.warn("[WARNING] Menerima pesan bukan JSON yang valid:", messageStr);
-        return;
-      }
-
+      let data = JSON.parse(messageStr);
       let sockets = this.state.getWebSockets();
+
       let targetUser = data.target;
 
       for (let socket of sockets) {
         if (socket !== server) {
           try {
             if (targetUser) {
-              let tags = this.state.getTags(socket);
-              let recipientId = tags && tags.length > 0 ? tags[0] : null;
-              
+              let recipientId = this.socketIds.get(socket);
               if (recipientId === targetUser) {
                 socket.send(JSON.stringify(data));
-                break; // Target ketemu, stop perulangan
+                break;
               }
             } else {
               socket.send(JSON.stringify(data));
@@ -122,15 +97,14 @@ export class SignalingRoom {
         }
       }
     } catch (err) {
-      console.error("[ERROR] Terjadi kesalahan pada webSocketMessage:", err);
+      console.error("[ERROR] Gagal parsing JSON:", err);
     }
   }
 
   async webSocketClose(server, code, reason, wasClean) {
-    let tags = this.state.getTags(server);
-    let senderId = tags && tags.length > 0 ? tags[0] : "unknown";
-    
+    let senderId = this.socketIds.get(server);
     console.log(`[DISCONNECT] Klien terputus: ${senderId}`);
+    this.socketIds.delete(server);
     
     this.broadcastRoomUsers();
     
@@ -140,10 +114,9 @@ export class SignalingRoom {
   }
 
   async webSocketError(server, error) {
-    let tags = this.state.getTags(server);
-    let senderId = tags && tags.length > 0 ? tags[0] : "unknown";
-    
+    let senderId = this.socketIds.get(server);
     console.error(`[ERROR] WebSocket error pada ${senderId}:`, error);
+    this.socketIds.delete(server);
     
     this.broadcastRoomUsers();
   }
