@@ -17,21 +17,24 @@ export default {
 export class SignalingRoom {
   constructor(state, env) {
     this.state = state;
-    this.socketIds = new Map(); // Mapping dari socket -> clientId
   }
 
-  // Fungsi helper untuk mengirim daftar user terbaru ke SEMUA client di room
   broadcastRoomUsers() {
     let sockets = this.state.getWebSockets();
-    let usersList = [];
+    let usersSet = new Set(); // Pakai Set agar ID user tidak ganda
     
-    // Kumpulkan semua ID user yang unik/aktif
     for (let socket of sockets) {
-      let userId = this.socketIds.get(socket);
-      if (userId) {
-        usersList.push(userId);
+      try {
+        let meta = socket.deserializeAttachment();
+        if (meta && meta.userId) {
+          usersSet.add(meta.userId);
+        }
+      } catch (e) {
+        console.error("[ERROR] Gagal membaca attachment socket:", e);
       }
     }
+
+    let usersList = Array.from(usersSet);
 
     let payload = JSON.stringify({
       type: "room_users",
@@ -62,10 +65,10 @@ export class SignalingRoom {
 
     this.state.acceptWebSocket(server);
 
-    this.socketIds.set(server, clientId);
+    server.serializeAttachment({ userId: clientId });
+    
     console.log(`[CONNECT] Klien terhubung dengan User ID: ${clientId}`);
 
-    // Update dan broadcast daftar user terbaru setelah ada yang masuk
     this.broadcastRoomUsers();
 
     return new Response(null, {
@@ -83,15 +86,15 @@ export class SignalingRoom {
       for (let socket of sockets) {
         if (socket !== server) {
           try {
-            // Jika pesan memiliki target khusus (seperti offer, answer, candidate)
+            let meta = socket.deserializeAttachment();
+            let targetUserId = meta ? meta.userId : null;
+
             if (data.target) {
-              let targetUserId = this.socketIds.get(socket);
-              // Kirim HANYA ke socket yang user ID-nya sesuai dengan target
               if (targetUserId === data.target) {
                 socket.send(JSON.stringify(data));
               }
             } else {
-              // Untuk pesan broadcast umum tanpa target (press, release, join, dll)
+              // Pesan broadcast (press, release, dll)
               socket.send(JSON.stringify(data));
             }
           } catch (e) {
@@ -105,22 +108,24 @@ export class SignalingRoom {
   }
 
   async webSocketClose(server, code, reason, wasClean) {
-    let senderId = this.socketIds.get(server);
-    console.log(`[DISCONNECT] Klien terputus: ${senderId}`);
-    this.socketIds.delete(server);
+    let meta = server.deserializeAttachment();
+    let senderId = meta ? meta.userId : "unknown";
     
-    // Update dan broadcast daftar user terbaru setelah ada yang keluar
+    console.log(`[DISCONNECT] Klien terputus: ${senderId}`);
+    
     this.broadcastRoomUsers();
     
-    server.close(code, "Closed by server");
+    try {
+      server.close(code, "Closed by server");
+    } catch (e) {}
   }
 
   async webSocketError(server, error) {
-    let senderId = this.socketIds.get(server);
-    console.error(`[ERROR] WebSocket error pada ${senderId}:`, error);
-    this.socketIds.delete(server);
+    let meta = server.deserializeAttachment();
+    let senderId = meta ? meta.userId : "unknown";
     
-    // Update dan broadcast daftar user terbaru jika terjadi error koneksi
+    console.error(`[ERROR] WebSocket error pada ${senderId}:`, error);
+    
     this.broadcastRoomUsers();
   }
 }
