@@ -54,7 +54,7 @@ export class SignalingRoom {
     const requestedUser = url.searchParams.get('user');
     let baseClientId = (requestedUser && requestedUser.trim() !== "") ? requestedUser.trim() : "user";
 
-    // PENCEGAHAN DUPLIKASI NAMA USER DALAM SATU ROOM
+    // Pencegahan duplikasi nama user dalam satu room
     let sockets = this.state.getWebSockets();
     let existingUsers = new Set();
     for (let socket of sockets) {
@@ -74,7 +74,7 @@ export class SignalingRoom {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
-    // Menyimpan clientId ke dalam tag WebSocket
+    // Menyimpan clientId ke dalam tag WebSocket Durable Object
     this.state.acceptWebSocket(server, [clientId]);
 
     console.log(`[CONNECT] Klien terhubung dengan User ID: ${clientId}`);
@@ -107,7 +107,6 @@ export class SignalingRoom {
           try {
             if (targetUser) {
               let tags = this.state.getTags(socket);
-              // PERBAIKAN: Ambil index ke-0 agar berupa String, bukan Array
               let recipientId = tags && tags.length > 0 ? tags[0] : null;
               
               if (recipientId === targetUser) {
@@ -133,8 +132,6 @@ export class SignalingRoom {
     
     console.log(`[DISCONNECT] Klien terputus: ${senderId}`);
     
-    // PERBAIKAN: Langsung panggil broadcast tanpa setTimeout. 
-    // Cloudflare otomatis menghapus socket yang diclose dari state.getWebSockets() secara realtime.
     this.broadcastRoomUsers();
     
     try {
@@ -148,7 +145,6 @@ export class SignalingRoom {
     
     console.error(`[ERROR] WebSocket error pada ${senderId}:`, error);
     
-    // PERBAIKAN: Langsung panggil broadcast tanpa setTimeout
     this.broadcastRoomUsers();
   }
-      }
+}
