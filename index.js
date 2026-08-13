@@ -1,8 +1,21 @@
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    // 1. Logika CORS Preflight untuk browser/klien web (jika dibutuhkan)
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type",
+        },
+      });
+    }
+
     const upgradeHeader = request.headers.get('Upgrade');
 
+    // 2. Teruskan koneksi WebSocket ke Durable Object (SignalingRoom)
     if (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket') {
       const room = url.searchParams.get('room') || 'default-room';
       let id = env.SIGNALING_ROOM.idFromName(room);
@@ -10,7 +23,8 @@ export default {
       return stub.fetch(request);
     }
 
-    return new Response('not found', { status: 200 });
+    // Response default jika tidak menggunakan WebSocket
+    return new Response('HT Walkie-Talkie Signaling Server is running.', { status: 200 });
   }
 };
 
@@ -21,8 +35,9 @@ export class SignalingRoom {
 
   broadcastRoomUsers() {
     let sockets = this.state.getWebSockets();
-    let usersSet = new Set(); // Pakai Set agar ID user tidak ganda
+    let usersSet = new Set(); 
     
+    // Ambil semua userId yang sedang terkoneksi
     for (let socket of sockets) {
       try {
         let meta = socket.deserializeAttachment();
@@ -41,6 +56,7 @@ export class SignalingRoom {
       users: usersList
     });
 
+    // Broadcast daftar user ke semua klien di room ini
     for (let socket of sockets) {
       try {
         socket.send(payload);
@@ -57,18 +73,23 @@ export class SignalingRoom {
     }
 
     const url = new URL(request.url);
+    
+    // 3. Logika parsing UID dan UserId dari URL params
     const requestedUser = url.searchParams.get('user');
-    const clientId = (requestedUser && requestedUser.trim() !== "") ? requestedUser : "user";
+    const clientId = (requestedUser && requestedUser.trim() !== "") ? requestedUser : "Anonymous";
+    const uid = url.searchParams.get('uid') || "unknown-uid";
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
     this.state.acceptWebSocket(server);
 
-    server.serializeAttachment({ userId: clientId });
+    // 4. Menyimpan *userId* DAN *uid* ke dalam state connection
+    server.serializeAttachment({ userId: clientId, uid: uid });
     
-    console.log(`[CONNECT] Klien terhubung dengan User ID: ${clientId}`);
+    console.log(`[CONNECT] Klien terhubung - User ID: ${clientId} | UID: ${uid}`);
 
+    // Update list partisipan untuk semua member
     this.broadcastRoomUsers();
 
     return new Response(null, {
@@ -84,18 +105,21 @@ export class SignalingRoom {
       let sockets = this.state.getWebSockets();
 
       for (let socket of sockets) {
+        // Jangan kirim kembali pesan ke pengirim
         if (socket !== server) {
           try {
             let meta = socket.deserializeAttachment();
             let targetUserId = meta ? meta.userId : null;
+            let targetUid = meta ? meta.uid : null;
 
+            // 5. Logika Smart Routing: Jika ada target, arahkan khusus (Offer, Answer, Candidate)
             if (data.target) {
-              if (targetUserId === data.target) {
-                socket.send(JSON.stringify(data));
+              if (data.target === targetUserId || data.target === targetUid) {
+                socket.send(messageStr);
               }
             } else {
-              // Pesan broadcast (press, release, dll)
-              socket.send(JSON.stringify(data));
+              // 6. Jika tidak ada target, broadcast ke seluruh room (Press, Release)
+              socket.send(messageStr);
             }
           } catch (e) {
             console.error("[ERROR] Gagal kirim pesan ke socket:", e);
@@ -113,6 +137,7 @@ export class SignalingRoom {
     
     console.log(`[DISCONNECT] Klien terputus: ${senderId}`);
     
+    // Perbarui member list ke orang yang tersisa di room
     this.broadcastRoomUsers();
     
     try {
@@ -126,6 +151,7 @@ export class SignalingRoom {
     
     console.error(`[ERROR] WebSocket error pada ${senderId}:`, error);
     
+    // Perbarui member list
     this.broadcastRoomUsers();
   }
 }
