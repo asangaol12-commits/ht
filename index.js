@@ -11,7 +11,7 @@ export default {
       "Content-Type": "application/json",
     };
 
-    // 1. Handling CORS Preflight
+
     if (method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
