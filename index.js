@@ -36,7 +36,7 @@ export default {
         const options = {
           method: method,
           headers: {
-            "Authorization": `Bearer ${env.CLOUDFLARE_CALLS_TOKEN}`,
+            "Authorization": `Bearer ${env.CLOUDFLARE_APP_ID} ${env.CLOUDFLARE_CALLS_TOKEN}`, // Catatan: sesuaikan format auth jika token Anda Bearer biasa
             "Content-Type": "application/json",
           },
         };
@@ -72,11 +72,12 @@ export default {
 
     // 2. PROXY REST API UNTUK CLOUDFLARE CALLS (SFU)
 
-    // A. Endpoint: Create Session
-    if (path === "/calls/session") {
+    // A. Endpoint: Create Session (Mendukung /calls/session dan /calls/session/)
+    if (path === "/calls/session" || path === "/calls/session/") {
       if (method === "POST") {
         const callsUrl = `https://rtc.live.cloudflare.com/v1/apps/${env.CLOUDFLARE_APP_ID}/sessions`;
-        return proxyToCalls(callsUrl, "POST");
+        const body = await request.text(); // DIPERBAIKI: Meneruskan body dari client
+        return proxyToCalls(callsUrl, "POST", body);
       }
       return new Response(
         JSON.stringify({ error: "Gunakan HTTP POST untuk membuat session di /calls/session" }),
@@ -85,7 +86,7 @@ export default {
     }
 
     // B. Endpoint: Negotiate Tracks (/calls/session/:id/tracks/new)
-    const trackMatch = path.match(/^\/calls\/session\/([^\/]+)\/tracks\/new$/);
+    const trackMatch = path.match(/^\/calls\/session\/([^\/]+)\/tracks\/new\/?$/);
     if (trackMatch) {
       if (method === "POST") {
         const sessionId = trackMatch[1];
