@@ -72,10 +72,10 @@ export default {
 
     // 2. PROXY REST API UNTUK CLOUDFLARE CALLS (SFU)
 
-    // A. Endpoint: Create Session
+    // A. Endpoint: Create Session (DIBERBAIKI: Menggunakan /sessions/new)
     if (path === "/calls/session" || path === "/calls/session/") {
       if (method === "POST") {
-        const callsUrl = `https://rtc.live.cloudflare.com/v1/apps/${env.CLOUDFLARE_APP_ID}/sessions`;
+        const callsUrl = `https://rtc.live.cloudflare.com/v1/apps/${env.CLOUDFLARE_APP_ID}/sessions/new`;
         const body = await request.text();
         return proxyToCalls(callsUrl, "POST", body);
       }
@@ -195,18 +195,17 @@ export class SignalingRoom {
     try {
       let messageStr = typeof msg === "string" ? msg : new TextDecoder().decode(msg);
       
-      // 1. Parsing JSON secara aman (Defensive)
       let data;
       try {
         data = JSON.parse(messageStr);
       } catch (parseErr) {
         console.warn("[WARN] Pesan WebSocket masuk bukan JSON valid:", messageStr);
-        return; // Abaikan jika bukan JSON
+        return;
       }
 
       let sockets = this.state.getWebSockets();
 
-      // 2. Intersepsi Target SFU ("target": "sfu")
+      // Intersepsi Target SFU ("target": "sfu")
       if (data.target === "sfu" && data.type === "offer") {
         if (!this.env || !this.env.CLOUDFLARE_APP_ID || !this.env.CLOUDFLARE_CALLS_TOKEN) {
           console.error("[ERROR] Environment variable CLOUDFLARE_APP_ID / TOKEN tidak ditemukan di DO.");
@@ -217,7 +216,8 @@ export class SignalingRoom {
           return;
         }
 
-        const callsUrl = `https://rtc.live.cloudflare.com/v1/apps/${this.env.CLOUDFLARE_APP_ID}/sessions`;
+        // DIPERBAIKI: Tambahkan /new di ujung URL
+        const callsUrl = `https://rtc.live.cloudflare.com/v1/apps/${this.env.CLOUDFLARE_APP_ID}/sessions/new`;
 
         const res = await fetch(callsUrl, {
           method: "POST",
@@ -233,7 +233,6 @@ export class SignalingRoom {
           }),
         });
 
-        // Safe text parsing dari Cloudflare Calls
         const rawText = await res.text();
         let resData;
         try {
@@ -248,15 +247,14 @@ export class SignalingRoom {
           return;
         }
 
-        if (res.ok && resData.result) {
-          const newSessionId = resData.result.sessionId;
-          const answerSdp = resData.result.sessionDescription.sdp;
+        if (res.ok && resData.sessionDescription) {
+          const newSessionId = resData.sessionId;
+          const answerSdp = resData.sessionDescription.sdp;
 
           let meta = ws.deserializeAttachment() || {};
           meta.sessionId = newSessionId;
           ws.serializeAttachment(meta);
 
-          // Balas SDP Answer ke Android
           ws.send(JSON.stringify({
             type: "answer",
             sender: "sfu",
@@ -277,7 +275,7 @@ export class SignalingRoom {
         return;
       }
 
-      // 3. Update Session ID Manual
+      // Update Session ID Manual
       if (data.type === "set_session_id") {
         let meta = ws.deserializeAttachment() || {};
         meta.sessionId = data.sessionId;
@@ -286,7 +284,7 @@ export class SignalingRoom {
         return;
       }
 
-      // 4. Relay Pesan Sinyal Direct / Peer
+      // Relay Pesan Sinyal Direct / Peer
       for (let socket of sockets) {
         if (socket !== ws) {
           try {
