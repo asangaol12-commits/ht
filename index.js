@@ -36,7 +36,7 @@ export default {
         const options = {
           method: method,
           headers: {
-            "Authorization": `Bearer ${env.CLOUDFLARE_APP_ID} ${env.CLOUDFLARE_CALLS_TOKEN}`, // Catatan: sesuaikan format auth jika token Anda Bearer biasa
+            "Authorization": `Bearer ${env.CLOUDFLARE_CALLS_TOKEN}`, // DIPERBAIKI: Format token murni Bearer
             "Content-Type": "application/json",
           },
         };
@@ -72,11 +72,11 @@ export default {
 
     // 2. PROXY REST API UNTUK CLOUDFLARE CALLS (SFU)
 
-    // A. Endpoint: Create Session (Mendukung /calls/session dan /calls/session/)
+    // A. Endpoint: Create Session
     if (path === "/calls/session" || path === "/calls/session/") {
       if (method === "POST") {
         const callsUrl = `https://rtc.live.cloudflare.com/v1/apps/${env.CLOUDFLARE_APP_ID}/sessions`;
-        const body = await request.text(); // DIPERBAIKI: Meneruskan body dari client
+        const body = await request.text();
         return proxyToCalls(callsUrl, "POST", body);
       }
       return new Response(
@@ -174,7 +174,7 @@ export class SignalingRoom {
     const url = new URL(request.url);
     const requestedUser = url.searchParams.get("user");
     const clientId = (requestedUser && requestedUser.trim() !== "") ? requestedUser : "Anonymous";
-    const uid = url.searchParams.get("uid") || "unknown-uid";
+    const uid = url.searchParams.get("uid") || "unknown-uid"; // DIPERBAIKI: Hapus typo 'oid'
     const sessionId = url.searchParams.get("sessionId") || null;
 
     const pair = new WebSocketPair();
