@@ -2,6 +2,9 @@ name = "ht"
 main = "index.js"
 compatibility_date = "2026-08-06"
 
+[vars]
+CLOUDFLARE_APP_ID = "aaa070e8-076f-4ccb-be27-7df44719ce61"
+
 [durable_objects]
 bindings = [
   { name = "SIGNALING_ROOM", class_name = "SignalingRoom" }
