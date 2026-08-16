@@ -78,7 +78,10 @@ export default {
       return stub.fetch(request);
     }
 
-    return new Response("Cloudflare Calls SFU Backend Running", { status: 200, headers: corsHeaders });
+return new Response(JSON.stringify({
+  status: "online",
+  message: "Cloudflare Calls SFU Backend Running"
+}), { status: 200, headers: corsHeaders });
   }
 };
 
