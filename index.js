@@ -2,7 +2,6 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // 1. Logika CORS Preflight untuk browser/klien web
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
@@ -15,7 +14,6 @@ export default {
 
     const upgradeHeader = request.headers.get('Upgrade');
 
-    // 2. Teruskan koneksi WebSocket ke Durable Object (SignalingRoom)
     if (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket') {
       const room = url.searchParams.get('room') || 'default-room';
       let id = env.SIGNALING_ROOM.idFromName(room);
@@ -23,7 +21,6 @@ export default {
       return stub.fetch(request);
     }
 
-    // Response default jika tidak menggunakan WebSocket
     return new Response('not-found', { status: 200 });
   }
 };
@@ -31,28 +28,10 @@ export default {
 export class SignalingRoom {
   constructor(state, env) {
     this.state = state;
-    this.env = env; // <--- PERUBAHAN UTAMA: Menyimpan env agar bisa dibaca di seluruh method class ini!
+    this.env = env; 
   }
 
-  // Contoh fungsi opsional untuk mengambil token/sesi otomatis dari RealtimeKit
-  async createRealtimeSession() {
-    try {
-      const response = await fetch(`https://rtc.live.cloudflare.com/v1/apps/${this.env.CLOUDFLARE_APP_ID}/sessions/new`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${this.env.CLOUDFLARE_API_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({}),
-      });
-      if (!response.ok) return null;
-      return await response.json();
-    } catch (e) {
-      console.error("[ERROR] Gagal membuat session RealtimeKit:", e);
-      return null;
-    }
-  }
-
+  // Fungsi helper untuk mengambil semua socket aktif dalam mode hibernasi
   broadcastRoomUsers() {
     let sockets = this.state.getWebSockets();
     let usersSet = new Set(); 
@@ -90,20 +69,19 @@ export class SignalingRoom {
     }
 
     const url = new URL(request.url);
-    
     const requestedUser = url.searchParams.get('user');
     const clientId = (requestedUser && requestedUser.trim() !== "") ? requestedUser : "Anonymous";
     const uid = url.searchParams.get('uid') || "unknown-uid";
 
-    // Contoh penggunaan Secret/Variable: 
-    // Anda bisa mengakses `this.env.CLOUDFLARE_APP_ID` atau `this.env.NAMA_VARIABEL` di sini kapan saja.
     console.log(`[CONFIG] Menggunakan App ID: ${this.env.CLOUDFLARE_APP_ID}`);
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
+    // Mengaktifkan WebSocket dengan opsi hibernasi
     this.state.acceptWebSocket(server);
 
+    // Menyimpan metadata ke attachment socket
     server.serializeAttachment({ userId: clientId, uid: uid });
     
     console.log(`[CONNECT] Klien terhubung - User ID: ${clientId} | UID: ${uid}`);
@@ -116,14 +94,15 @@ export class SignalingRoom {
     });
   }
 
-  async webSocketMessage(server, msg) {
+  // Handler khusus untuk Hibernatable WebSockets
+  async webSocketMessage(ws, msg) {
     try {
       let messageStr = typeof msg === "string" ? msg : new TextDecoder().decode(msg);
       let data = JSON.parse(messageStr);
       let sockets = this.state.getWebSockets();
 
       for (let socket of sockets) {
-        if (socket !== server) {
+        if (socket !== ws) {
           try {
             let meta = socket.deserializeAttachment();
             let targetUserId = meta ? meta.userId : null;
@@ -146,20 +125,20 @@ export class SignalingRoom {
     }
   }
 
-  async webSocketClose(server, code, reason, wasClean) {
-    let meta = server.deserializeAttachment();
+  async webSocketClose(ws, code, reason, wasClean) {
+    let meta = ws.deserializeAttachment();
     let senderId = meta ? meta.userId : "unknown";
     
     console.log(`[DISCONNECT] Klien terputus: ${senderId}`);
     this.broadcastRoomUsers();
     
     try {
-      server.close(code, "Closed by server");
+      ws.close(code, "Closed by server");
     } catch (e) {}
   }
 
-  async webSocketError(server, error) {
-    let meta = server.deserializeAttachment();
+  async webSocketError(ws, error) {
+    let meta = ws.deserializeAttachment();
     let senderId = meta ? meta.userId : "unknown";
     
     console.error(`[ERROR] WebSocket error pada ${senderId}:`, error);
