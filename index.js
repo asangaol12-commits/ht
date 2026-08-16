@@ -5,6 +5,8 @@
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    const path = url.pathname;
+    const method = request.method;
 
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
@@ -14,7 +16,7 @@ export default {
     };
 
     // 1. Handling CORS Preflight
-    if (request.method === "OPTIONS") {
+    if (method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
@@ -47,7 +49,6 @@ export default {
         try {
           data = JSON.parse(rawText);
         } catch (e) {
-          // Menagkap jika Cloudflare mengembalikan HTML / Plain text error (misal 401/404)
           return new Response(
             JSON.stringify({
               error: `Cloudflare Calls API Error Status ${res.status}`,
@@ -72,37 +73,33 @@ export default {
     // 2. PROXY REST API UNTUK CLOUDFLARE CALLS (SFU)
 
     // A. Endpoint: Create Session
-    if (url.pathname === "/calls/session") {
-      if (request.method === "POST") {
+    if (path === "/calls/session") {
+      if (method === "POST") {
         const callsUrl = `https://rtc.live.cloudflare.com/v1/apps/${env.CLOUDFLARE_APP_ID}/sessions/new`;
         return proxyToCalls(callsUrl, "POST");
       }
       return new Response(
-        JSON.stringify({
-          error: "Gunakan HTTP POST untuk membuat session di /calls/session",
-        }),
+        JSON.stringify({ error: "Gunakan HTTP POST untuk membuat session di /calls/session" }),
         { status: 405, headers: corsHeaders }
       );
     }
 
-    // B. Endpoint: Negotiate Tracks
-    const trackMatch = url.pathname.match(/^\/calls\/session\/([^\/]+)\/tracks\/new$/);
+    // B. Endpoint: Negotiate Tracks (/calls/session/:id/tracks/new)
+    const trackMatch = path.match(/^\/calls\/session\/([^\/]+)\/tracks\/new$/);
     if (trackMatch) {
-      if (request.method === "POST") {
+      if (method === "POST") {
         const sessionId = trackMatch[1];
         const callsUrl = `https://rtc.live.cloudflare.com/v1/apps/${env.CLOUDFLARE_APP_ID}/sessions/${sessionId}/tracks/new`;
         const body = await request.text();
         return proxyToCalls(callsUrl, "POST", body);
       }
       return new Response(
-        JSON.stringify({
-          error: "Gunakan HTTP POST untuk meregister track",
-        }),
+        JSON.stringify({ error: "Gunakan HTTP POST untuk meregister track" }),
         { status: 405, headers: corsHeaders }
       );
     }
 
-    // 3. WEBSOCKET HANDLER
+    // 3. WEBSOCKET HANDLER (Mengarahkan ke Durable Object)
     const upgradeHeader = request.headers.get("Upgrade");
     if (upgradeHeader && upgradeHeader.toLowerCase() === "websocket") {
       const room = url.searchParams.get("room") || "default-room";
