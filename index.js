@@ -67,8 +67,6 @@ export default {
     }
 
     // 2. PROXY REST API UNTUK CLOUDFLARE CALLS (SFU)
-
-    // A. Endpoint: Create Session (DIBERBAIKI: Menggunakan /sessions/new)
     if (path === "/calls/session" || path === "/calls/session/") {
       if (method === "POST") {
         const callsUrl = `https://rtc.live.cloudflare.com/v1/apps/${env.CLOUDFLARE_APP_ID}/sessions/new`;
@@ -76,12 +74,11 @@ export default {
         return proxyToCalls(callsUrl, "POST", body);
       }
       return new Response(
-        JSON.stringify({ error: "Gunakan HTTP POST untuk membuat session di /calls/session" }),
+        JSON.stringify({ error: "Gunakan HTTP POST untuk /calls/session" }),
         { status: 405, headers: corsHeaders }
       );
     }
 
-    // B. Endpoint: Negotiate Tracks (/calls/session/:id/tracks/new)
     const trackMatch = path.match(/^\/calls\/session\/([^\/]+)\/tracks\/new\/?$/);
     if (trackMatch) {
       if (method === "POST") {
@@ -110,6 +107,7 @@ export default {
       JSON.stringify({
         status: "online",
         message: "Cloudflare Calls SFU Backend Running",
+        appIdUsed: env.CLOUDFLARE_APP_ID ? `${env.CLOUDFLARE_APP_ID.substring(0, 8)}...` : "NONE"
       }),
       { status: 200, headers: corsHeaders }
     );
@@ -171,13 +169,12 @@ export class SignalingRoom {
     const requestedUser = url.searchParams.get("user");
     const clientId = (requestedUser && requestedUser.trim() !== "") ? requestedUser : "Anonymous";
     const uid = url.searchParams.get("uid") || "unknown-uid";
-    const sessionId = url.searchParams.get("sessionId") || null;
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
     this.state.acceptWebSocket(server);
-    server.serializeAttachment({ userId: clientId, uid: uid, sessionId: sessionId });
+    server.serializeAttachment({ userId: clientId, uid: uid, sessionId: null });
 
     this.broadcastRoomUsers();
 
@@ -195,14 +192,14 @@ export class SignalingRoom {
       try {
         data = JSON.parse(messageStr);
       } catch (parseErr) {
-        console.warn("[WARN] Pesan WebSocket masuk bukan JSON valid:", messageStr);
         return;
       }
 
       let sockets = this.state.getWebSockets();
+      let myMeta = ws.deserializeAttachment() || {};
 
-      // Intersepsi Target SFU ("target": "sfu")
-      if (data.target === "sfu" && data.type === "offer") {
+      // 1. DITANGANI: Target khusus SFU Cloudflare Calls ("target": "sfu")
+      if (data.target === "sfu") {
         if (!this.env || !this.env.CLOUDFLARE_APP_ID || !this.env.CLOUDFLARE_CALLS_TOKEN) {
           console.error("[ERROR] Environment variable CLOUDFLARE_APP_ID / TOKEN tidak ditemukan di DO.");
           ws.send(JSON.stringify({ 
@@ -212,75 +209,110 @@ export class SignalingRoom {
           return;
         }
 
-        // DIPERBAIKI: Tambahkan /new di ujung URL
-        const callsUrl = `https://rtc.live.cloudflare.com/v1/apps/${this.env.CLOUDFLARE_APP_ID}/sessions/new`;
+        // A. Inisialisasi Session Baru (SDP Offer dari Android)
+        if (data.type === "offer") {
+          const callsUrl = `https://rtc.live.cloudflare.com/v1/apps/${this.env.CLOUDFLARE_APP_ID}/sessions/new`;
 
-        const res = await fetch(callsUrl, {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${this.env.CLOUDFLARE_CALLS_TOKEN}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            sessionDescription: {
-              type: "offer",
-              sdp: data.sdp,
+          const res = await fetch(callsUrl, {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${this.env.CLOUDFLARE_CALLS_TOKEN}`,
+              "Content-Type": "application/json",
             },
-          }),
-        });
+            body: JSON.stringify({
+              sessionDescription: {
+                type: "offer",
+                sdp: data.sdp,
+              },
+            }),
+          });
 
-        const rawText = await res.text();
-        let resData;
-        try {
-          resData = JSON.parse(rawText);
-        } catch (e) {
-          console.error("[ERROR] Cloudflare Calls API mengembalikan non-JSON:", rawText);
-          ws.send(JSON.stringify({ 
-            type: "error", 
-            message: `Cloudflare Calls HTTP Error Status ${res.status}`, 
-            details: rawText 
-          }));
+          const rawText = await res.text();
+          let resData;
+          try { resData = JSON.parse(rawText); } catch (e) { resData = null; }
+
+          if (res.ok && resData && resData.sessionDescription) {
+            const newSessionId = resData.sessionId;
+            const answerSdp = resData.sessionDescription.sdp;
+
+            myMeta.sessionId = newSessionId;
+            ws.serializeAttachment(myMeta);
+
+            ws.send(JSON.stringify({
+              type: "answer",
+              sender: "sfu",
+              sessionId: newSessionId,
+              sdp: answerSdp,
+            }));
+
+            this.broadcastRoomUsers();
+          } else {
+            console.error("[SFU ERROR] Gagal dari Cloudflare Calls:", resData || rawText);
+            ws.send(JSON.stringify({
+              type: "error",
+              sender: "sfu",
+              message: "Gagal negosiasi SDP dengan Cloudflare Calls",
+              details: resData || rawText,
+            }));
+          }
           return;
         }
 
-        if (res.ok && resData.sessionDescription) {
-          const newSessionId = resData.sessionId;
-          const answerSdp = resData.sessionDescription.sdp;
+        // B. FITUR BARU: Handle Pull Track Audio dari Pembicara Aktif
+        if (data.type === "pull_track") {
+          const targetUserId = data.remoteUserId;
+          let targetSessionId = null;
 
-          let meta = ws.deserializeAttachment() || {};
-          meta.sessionId = newSessionId;
-          ws.serializeAttachment(meta);
+          for (let socket of sockets) {
+            let meta = socket.deserializeAttachment();
+            if (meta && (meta.userId === targetUserId || meta.uid === targetUserId)) {
+              targetSessionId = meta.sessionId;
+              break;
+            }
+          }
 
-          ws.send(JSON.stringify({
-            type: "answer",
-            sender: "sfu",
-            sessionId: newSessionId,
-            sdp: answerSdp,
-          }));
+          if (targetSessionId && myMeta.sessionId) {
+            const pullUrl = `https://rtc.live.cloudflare.com/v1/apps/${this.env.CLOUDFLARE_APP_ID}/sessions/${myMeta.sessionId}/tracks/new`;
+            const res = await fetch(pullUrl, {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${this.env.CLOUDFLARE_CALLS_TOKEN}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                tracks: [{
+                  location: "remote",
+                  sessionId: targetSessionId,
+                  trackName: "WALKIE_SFU_AUDIO"
+                }]
+              }),
+            });
 
-          this.broadcastRoomUsers();
-        } else {
-          console.error("[SFU ERROR] Gagal dari Cloudflare Calls:", resData);
-          ws.send(JSON.stringify({
-            type: "error",
-            sender: "sfu",
-            message: "Gagal negosiasi SDP dengan Cloudflare Calls",
-            details: resData,
-          }));
+            const resData = await res.json().catch(() => null);
+            if (res.ok && resData && resData.sessionDescription) {
+              ws.send(JSON.stringify({
+                type: "sfu_offer",
+                sender: "sfu",
+                sdp: resData.sessionDescription.sdp
+              }));
+            }
+          }
+          return;
         }
+
+        // Absorpsi kandidat ICE/pesan SFU lain agar tidak diteruskan ke peer
         return;
       }
 
-      // Update Session ID Manual
+      // 2. Update Session ID Manual jika dikirim oleh client
       if (data.type === "set_session_id") {
-        let meta = ws.deserializeAttachment() || {};
-        meta.sessionId = data.sessionId;
-        ws.serializeAttachment(meta);
+        myMeta.sessionId = data.sessionId;
+        ws.serializeAttachment(myMeta);
         this.broadcastRoomUsers();
         return;
       }
 
-      // Relay Pesan Sinyal Direct / Peer
+      // 3. Relay Pesan Sinyal Direct / Peer (Sinyal PTT Press, Release, dll)
       for (let socket of sockets) {
         if (socket !== ws) {
           try {
