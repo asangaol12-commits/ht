@@ -75,7 +75,7 @@ export default {
     // A. Endpoint: Create Session
     if (path === "/calls/session") {
       if (method === "POST") {
-        const callsUrl = `https://rtc.live.cloudflare.com/v1/apps/${env.CLOUDFLARE_APP_ID}/sessions/new`;
+        const callsUrl = `https://rtc.live.cloudflare.com/v1/apps/${env.CLOUDFLARE_APP_ID}/sessions`;
         return proxyToCalls(callsUrl, "POST");
       }
       return new Response(
