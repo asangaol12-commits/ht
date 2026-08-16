@@ -6,70 +6,103 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // 1. Handling CORS Preflight untuk Akses dari Aplikasi Android / Web
-    if (request.method === "OPTIONS") {
-      return new Response(null, {
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type, Authorization",
-        },
-      });
-    }
-
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
       "Content-Type": "application/json",
     };
 
+    // 1. Handling CORS Preflight
+    if (request.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: corsHeaders });
+    }
+
+    // Validasi Environment Variables
+    if (!env.CLOUDFLARE_APP_ID || !env.CLOUDFLARE_CALLS_TOKEN) {
+      return new Response(
+        JSON.stringify({
+          error: "Konfigurasi gagal: CLOUDFLARE_APP_ID atau CLOUDFLARE_CALLS_TOKEN belum diatur di Worker Secrets / Variables.",
+        }),
+        { status: 500, headers: corsHeaders }
+      );
+    }
+
+    // Helper proxy request aman ke Cloudflare Calls API
+    async function proxyToCalls(targetUrl, method, body = null) {
+      try {
+        const options = {
+          method: method,
+          headers: {
+            "Authorization": `Bearer ${env.CLOUDFLARE_CALLS_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+        };
+        if (body) options.body = body;
+
+        const res = await fetch(targetUrl, options);
+        const rawText = await res.text();
+
+        let data;
+        try {
+          data = JSON.parse(rawText);
+        } catch (e) {
+          // Menagkap jika Cloudflare mengembalikan HTML / Plain text error (misal 401/404)
+          return new Response(
+            JSON.stringify({
+              error: `Cloudflare Calls API Error Status ${res.status}`,
+              details: rawText,
+            }),
+            { status: res.status, headers: corsHeaders }
+          );
+        }
+
+        return new Response(JSON.stringify(data), {
+          status: res.status,
+          headers: corsHeaders,
+        });
+      } catch (err) {
+        return new Response(
+          JSON.stringify({ error: err.message }),
+          { status: 500, headers: corsHeaders }
+        );
+      }
+    }
+
     // 2. PROXY REST API UNTUK CLOUDFLARE CALLS (SFU)
-    // Menjaga agar CLOUDFLARE_CALLS_TOKEN tetap aman di Worker
 
-    // A. Endpoint: Membuat Session Baru di Cloudflare Calls
-    // Client memanggil: POST /calls/session
-    if (url.pathname === "/calls/session" && request.method === "POST") {
-      const callsUrl = `https://rtc.live.cloudflare.com/v1/apps/${env.CLOUDFLARE_APP_ID}/sessions/new`;
-      
-      try {
-        const res = await fetch(callsUrl, {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${env.CLOUDFLARE_CALLS_TOKEN}`,
-            "Content-Type": "application/json",
-          },
-        });
-        const data = await res.json();
-        return new Response(JSON.stringify(data), { status: res.status, headers: corsHeaders });
-      } catch (err) {
-        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+    // A. Endpoint: Create Session
+    if (url.pathname === "/calls/session") {
+      if (request.method === "POST") {
+        const callsUrl = `https://rtc.live.cloudflare.com/v1/apps/${env.CLOUDFLARE_APP_ID}/sessions/new`;
+        return proxyToCalls(callsUrl, "POST");
       }
+      return new Response(
+        JSON.stringify({
+          error: "Gunakan HTTP POST untuk membuat session di /calls/session",
+        }),
+        { status: 405, headers: corsHeaders }
+      );
     }
 
-    // B. Endpoint: Negosiasi Track (Publish Local Track / Subscribe Remote Track)
-    // Client memanggil: POST /calls/session/:sessionId/tracks/new
+    // B. Endpoint: Negotiate Tracks
     const trackMatch = url.pathname.match(/^\/calls\/session\/([^\/]+)\/tracks\/new$/);
-    if (trackMatch && request.method === "POST") {
-      const sessionId = trackMatch[1];
-      const callsUrl = `https://rtc.live.cloudflare.com/v1/apps/${env.CLOUDFLARE_APP_ID}/sessions/${sessionId}/tracks/new`;
-
-      try {
+    if (trackMatch) {
+      if (request.method === "POST") {
+        const sessionId = trackMatch[1];
+        const callsUrl = `https://rtc.live.cloudflare.com/v1/apps/${env.CLOUDFLARE_APP_ID}/sessions/${sessionId}/tracks/new`;
         const body = await request.text();
-        const res = await fetch(callsUrl, {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${env.CLOUDFLARE_CALLS_TOKEN}`,
-            "Content-Type": "application/json",
-          },
-          body: body,
-        });
-        const data = await res.json();
-        return new Response(JSON.stringify(data), { status: res.status, headers: corsHeaders });
-      } catch (err) {
-        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: corsHeaders });
+        return proxyToCalls(callsUrl, "POST", body);
       }
+      return new Response(
+        JSON.stringify({
+          error: "Gunakan HTTP POST untuk meregister track",
+        }),
+        { status: 405, headers: corsHeaders }
+      );
     }
 
-    // 3. WEBSOCKET HANDLER (Untuk State Room & Broadcast Peserta)
+    // 3. WEBSOCKET HANDLER
     const upgradeHeader = request.headers.get("Upgrade");
     if (upgradeHeader && upgradeHeader.toLowerCase() === "websocket") {
       const room = url.searchParams.get("room") || "default-room";
@@ -78,15 +111,19 @@ export default {
       return stub.fetch(request);
     }
 
-return new Response(JSON.stringify({
-  status: "online",
-  message: "Cloudflare Calls SFU Backend Running"
-}), { status: 200, headers: corsHeaders });
-  }
+    // 4. FALLBACK RESPONSE
+    return new Response(
+      JSON.stringify({
+        status: "online",
+        message: "Cloudflare Calls SFU Backend Running",
+      }),
+      { status: 200, headers: corsHeaders }
+    );
+  },
 };
 
 // ============================================================
-// DURABLE OBJECT: SIGNALING ROOM (ROOM MANAGEMENT & BROADCAST)
+// DURABLE OBJECT: SIGNALING ROOM
 // ============================================================
 export class SignalingRoom {
   constructor(state, env) {
@@ -94,7 +131,6 @@ export class SignalingRoom {
     this.env = env;
   }
 
-  // Broadcast daftar user & Calls sessionId aktif di room
   broadcastRoomUsers() {
     let sockets = this.state.getWebSockets();
     let users = [];
@@ -131,25 +167,23 @@ export class SignalingRoom {
   async fetch(request) {
     const upgradeHeader = request.headers.get("Upgrade");
     if (!upgradeHeader || upgradeHeader.toLowerCase() !== "websocket") {
-      return new Response("Expected Upgrade: websocket", { status: 426 });
+      return new Response(
+        JSON.stringify({ error: "Expected Upgrade: websocket" }),
+        { status: 426, headers: { "Content-Type": "application/json" } }
+      );
     }
 
     const url = new URL(request.url);
     const requestedUser = url.searchParams.get("user");
     const clientId = (requestedUser && requestedUser.trim() !== "") ? requestedUser : "Anonymous";
     const uid = url.searchParams.get("uid") || "unknown-uid";
-    const sessionId = url.searchParams.get("sessionId") || null; // ID Sesi Cloudflare Calls jika ada
+    const sessionId = url.searchParams.get("sessionId") || null;
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
-    // Mengaktifkan mode hibernasi
     this.state.acceptWebSocket(server);
-
-    // Simpan metadata ke attachment socket
     server.serializeAttachment({ userId: clientId, uid: uid, sessionId: sessionId });
-
-    console.log(`[CONNECT] Klien: ${clientId} | UID: ${uid} | Calls Session: ${sessionId}`);
 
     this.broadcastRoomUsers();
 
@@ -159,14 +193,12 @@ export class SignalingRoom {
     });
   }
 
-  // Handler pesan WebSocket dari Klien (Hibernatable API)
   async webSocketMessage(ws, msg) {
     try {
       let messageStr = typeof msg === "string" ? msg : new TextDecoder().decode(msg);
       let data = JSON.parse(messageStr);
       let sockets = this.state.getWebSockets();
 
-      // Jika klien memperbarui Session ID Cloudflare Calls mereka
       if (data.type === "set_session_id") {
         let meta = ws.deserializeAttachment() || {};
         meta.sessionId = data.sessionId;
@@ -175,7 +207,6 @@ export class SignalingRoom {
         return;
       }
 
-      // Forward pesan (misal notification `track_published`, chat, dll) ke user lain
       for (let socket of sockets) {
         if (socket !== ws) {
           try {
@@ -201,22 +232,13 @@ export class SignalingRoom {
   }
 
   async webSocketClose(ws, code, reason, wasClean) {
-    let meta = ws.deserializeAttachment();
-    let senderId = meta ? meta.userId : "unknown";
-
-    console.log(`[DISCONNECT] Klien terputus: ${senderId}`);
     this.broadcastRoomUsers();
-
     try {
       ws.close(code, "Closed by server");
     } catch (e) {}
   }
 
   async webSocketError(ws, error) {
-    let meta = ws.deserializeAttachment();
-    let senderId = meta ? meta.userId : "unknown";
-
-    console.error(`[ERROR] WebSocket error pada ${senderId}:`, error);
     this.broadcastRoomUsers();
   }
 }
