@@ -36,7 +36,7 @@ export default {
         const options = {
           method: method,
           headers: {
-            "Authorization": `Bearer ${env.CLOUDFLARE_CALLS_TOKEN}`, // DIPERBAIKI: Format token murni Bearer
+            "Authorization": `Bearer ${env.CLOUDFLARE_CALLS_TOKEN}`,
             "Content-Type": "application/json",
           },
         };
@@ -197,11 +197,12 @@ export class SignalingRoom {
       let data = JSON.parse(messageStr);
       let sockets = this.state.getWebSockets();
 
-      // 1. PENANGANAN OTOMATIS JIKA TARGET ADALAH "sfu"
+      // A. INTERSEPSI SINYAL SFU ("target": "sfu")
       if (data.target === "sfu") {
         if (data.type === "offer") {
           const callsUrl = `https://rtc.live.cloudflare.com/v1/apps/${this.env.CLOUDFLARE_APP_ID}/sessions`;
           
+          // Kirim SDP Offer dari Android ke Cloudflare Calls REST API
           const res = await fetch(callsUrl, {
             method: "POST",
             headers: {
@@ -216,18 +217,18 @@ export class SignalingRoom {
             }),
           });
 
-          const responseData = await res.json();
+          const resData = await res.json();
 
-          if (res.ok && responseData.result) {
-            const newSessionId = responseData.result.sessionId;
-            const answerSdp = responseData.result.sessionDescription.sdp;
+          if (res.ok && resData.result) {
+            const newSessionId = resData.result.sessionId;
+            const answerSdp = resData.result.sessionDescription.sdp;
 
-            // Update sessionId di attachment WebSocket client ini
+            // Simpan sessionId ke metadata koneksi WebSocket ini
             let meta = ws.deserializeAttachment() || {};
             meta.sessionId = newSessionId;
             ws.serializeAttachment(meta);
 
-            // Kirim SDP Answer balik ke Android client
+            // Balas ke Android client dengan SDP Answer
             ws.send(JSON.stringify({
               type: "answer",
               sender: "sfu",
@@ -235,20 +236,22 @@ export class SignalingRoom {
               sdp: answerSdp,
             }));
 
-            // Informasikan user lain bahwa client ini punya sessionId baru
+            // Siarkan daftar user terbaru yang kini sudah memiliki sessionId SFU
             this.broadcastRoomUsers();
           } else {
+            console.error("[SFU ERROR] Cloudflare Calls response error:", resData);
             ws.send(JSON.stringify({
               type: "error",
-              message: "Gagal membuat SFU session di Cloudflare",
-              details: responseData,
+              sender: "sfu",
+              message: "Gagal negosiasi SDP dengan Cloudflare Calls",
+              details: resData,
             }));
           }
         }
         return;
       }
 
-      // 2. Tipe pesan update session ID secara manual
+      // B. PERBARUI SESSION ID SECARA MANUAL
       if (data.type === "set_session_id") {
         let meta = ws.deserializeAttachment() || {};
         meta.sessionId = data.sessionId;
@@ -257,7 +260,7 @@ export class SignalingRoom {
         return;
       }
 
-      // 3. Relay Pesan Sinyal Antar Client (P2P / Peer Direct)
+      // C. RELAY SINYAL P2P / PEER DIRECT
       for (let socket of sockets) {
         if (socket !== ws) {
           try {
