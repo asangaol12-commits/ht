@@ -194,64 +194,90 @@ export class SignalingRoom {
   async webSocketMessage(ws, msg) {
     try {
       let messageStr = typeof msg === "string" ? msg : new TextDecoder().decode(msg);
-      let data = JSON.parse(messageStr);
+      
+      // 1. Parsing JSON secara aman (Defensive)
+      let data;
+      try {
+        data = JSON.parse(messageStr);
+      } catch (parseErr) {
+        console.warn("[WARN] Pesan WebSocket masuk bukan JSON valid:", messageStr);
+        return; // Abaikan jika bukan JSON
+      }
+
       let sockets = this.state.getWebSockets();
 
-      // A. INTERSEPSI SINYAL SFU ("target": "sfu")
-      if (data.target === "sfu") {
-        if (data.type === "offer") {
-          const callsUrl = `https://rtc.live.cloudflare.com/v1/apps/${this.env.CLOUDFLARE_APP_ID}/sessions`;
-          
-          // Kirim SDP Offer dari Android ke Cloudflare Calls REST API
-          const res = await fetch(callsUrl, {
-            method: "POST",
-            headers: {
-              "Authorization": `Bearer ${this.env.CLOUDFLARE_CALLS_TOKEN}`,
-              "Content-Type": "application/json",
+      // 2. Intersepsi Target SFU ("target": "sfu")
+      if (data.target === "sfu" && data.type === "offer") {
+        if (!this.env || !this.env.CLOUDFLARE_APP_ID || !this.env.CLOUDFLARE_CALLS_TOKEN) {
+          console.error("[ERROR] Environment variable CLOUDFLARE_APP_ID / TOKEN tidak ditemukan di DO.");
+          ws.send(JSON.stringify({ 
+            type: "error", 
+            message: "Konfigurasi SFU Worker belum lengkap di server." 
+          }));
+          return;
+        }
+
+        const callsUrl = `https://rtc.live.cloudflare.com/v1/apps/${this.env.CLOUDFLARE_APP_ID}/sessions`;
+
+        const res = await fetch(callsUrl, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${this.env.CLOUDFLARE_CALLS_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            sessionDescription: {
+              type: "offer",
+              sdp: data.sdp,
             },
-            body: JSON.stringify({
-              sessionDescription: {
-                type: "offer",
-                sdp: data.sdp,
-              },
-            }),
-          });
+          }),
+        });
 
-          const resData = await res.json();
+        // Safe text parsing dari Cloudflare Calls
+        const rawText = await res.text();
+        let resData;
+        try {
+          resData = JSON.parse(rawText);
+        } catch (e) {
+          console.error("[ERROR] Cloudflare Calls API mengembalikan non-JSON:", rawText);
+          ws.send(JSON.stringify({ 
+            type: "error", 
+            message: `Cloudflare Calls HTTP Error Status ${res.status}`, 
+            details: rawText 
+          }));
+          return;
+        }
 
-          if (res.ok && resData.result) {
-            const newSessionId = resData.result.sessionId;
-            const answerSdp = resData.result.sessionDescription.sdp;
+        if (res.ok && resData.result) {
+          const newSessionId = resData.result.sessionId;
+          const answerSdp = resData.result.sessionDescription.sdp;
 
-            // Simpan sessionId ke metadata koneksi WebSocket ini
-            let meta = ws.deserializeAttachment() || {};
-            meta.sessionId = newSessionId;
-            ws.serializeAttachment(meta);
+          let meta = ws.deserializeAttachment() || {};
+          meta.sessionId = newSessionId;
+          ws.serializeAttachment(meta);
 
-            // Balas ke Android client dengan SDP Answer
-            ws.send(JSON.stringify({
-              type: "answer",
-              sender: "sfu",
-              sessionId: newSessionId,
-              sdp: answerSdp,
-            }));
+          // Balas SDP Answer ke Android
+          ws.send(JSON.stringify({
+            type: "answer",
+            sender: "sfu",
+            sessionId: newSessionId,
+            sdp: answerSdp,
+          }));
 
-            // Siarkan daftar user terbaru yang kini sudah memiliki sessionId SFU
-            this.broadcastRoomUsers();
-          } else {
-            console.error("[SFU ERROR] Cloudflare Calls response error:", resData);
-            ws.send(JSON.stringify({
-              type: "error",
-              sender: "sfu",
-              message: "Gagal negosiasi SDP dengan Cloudflare Calls",
-              details: resData,
-            }));
-          }
+          this.broadcastRoomUsers();
+        } else {
+          console.error("[SFU ERROR] Gagal dari Cloudflare Calls:", resData);
+          ws.send(JSON.stringify({
+            type: "error",
+            sender: "sfu",
+            message: "Gagal negosiasi SDP dengan Cloudflare Calls",
+            details: resData,
+          }));
         }
         return;
       }
 
-      // B. PERBARUI SESSION ID SECARA MANUAL
+      // 3. Update Session ID Manual
       if (data.type === "set_session_id") {
         let meta = ws.deserializeAttachment() || {};
         meta.sessionId = data.sessionId;
@@ -260,7 +286,7 @@ export class SignalingRoom {
         return;
       }
 
-      // C. RELAY SINYAL P2P / PEER DIRECT
+      // 4. Relay Pesan Sinyal Direct / Peer
       for (let socket of sockets) {
         if (socket !== ws) {
           try {
@@ -276,12 +302,12 @@ export class SignalingRoom {
               socket.send(messageStr);
             }
           } catch (e) {
-            console.error("[ERROR] Gagal kirim pesan ke socket:", e);
+            console.error("[ERROR] Gagal relay pesan ke socket:", e);
           }
         }
       }
     } catch (err) {
-      console.error("[ERROR] Gagal memproses websocket message:", err);
+      console.error("[ERROR] Fatal error pada webSocketMessage:", err.stack || err.message || err);
     }
   }
 
