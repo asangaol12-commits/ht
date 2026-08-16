@@ -2,7 +2,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // 1. Logika CORS Preflight untuk browser/klien web (jika dibutuhkan)
+    // 1. Logika CORS Preflight untuk browser/klien web
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
@@ -31,13 +31,32 @@ export default {
 export class SignalingRoom {
   constructor(state, env) {
     this.state = state;
+    this.env = env; // <--- PERUBAHAN UTAMA: Menyimpan env agar bisa dibaca di seluruh method class ini!
+  }
+
+  // Contoh fungsi opsional untuk mengambil token/sesi otomatis dari RealtimeKit
+  async createRealtimeSession() {
+    try {
+      const response = await fetch(`https://rtc.live.cloudflare.com/v1/apps/${this.env.CLOUDFLARE_APP_ID}/sessions/new`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.env.CLOUDFLARE_API_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}),
+      });
+      if (!response.ok) return null;
+      return await response.json();
+    } catch (e) {
+      console.error("[ERROR] Gagal membuat session RealtimeKit:", e);
+      return null;
+    }
   }
 
   broadcastRoomUsers() {
     let sockets = this.state.getWebSockets();
     let usersSet = new Set(); 
     
-    // Ambil semua userId yang sedang terkoneksi
     for (let socket of sockets) {
       try {
         let meta = socket.deserializeAttachment();
@@ -50,13 +69,11 @@ export class SignalingRoom {
     }
 
     let usersList = Array.from(usersSet);
-
     let payload = JSON.stringify({
       type: "room_users",
       users: usersList
     });
 
-    // Broadcast daftar user ke semua klien di room ini
     for (let socket of sockets) {
       try {
         socket.send(payload);
@@ -74,22 +91,23 @@ export class SignalingRoom {
 
     const url = new URL(request.url);
     
-    // 3. Logika parsing UID dan UserId dari URL params
     const requestedUser = url.searchParams.get('user');
     const clientId = (requestedUser && requestedUser.trim() !== "") ? requestedUser : "Anonymous";
     const uid = url.searchParams.get('uid') || "unknown-uid";
+
+    // Contoh penggunaan Secret/Variable: 
+    // Anda bisa mengakses `this.env.CLOUDFLARE_APP_ID` atau `this.env.NAMA_VARIABEL` di sini kapan saja.
+    console.log(`[CONFIG] Menggunakan App ID: ${this.env.CLOUDFLARE_APP_ID}`);
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
 
     this.state.acceptWebSocket(server);
 
-    // 4. Menyimpan *userId* DAN *uid* ke dalam state connection
     server.serializeAttachment({ userId: clientId, uid: uid });
     
     console.log(`[CONNECT] Klien terhubung - User ID: ${clientId} | UID: ${uid}`);
 
-    // Update list partisipan untuk semua member
     this.broadcastRoomUsers();
 
     return new Response(null, {
@@ -105,20 +123,17 @@ export class SignalingRoom {
       let sockets = this.state.getWebSockets();
 
       for (let socket of sockets) {
-        // Jangan kirim kembali pesan ke pengirim
         if (socket !== server) {
           try {
             let meta = socket.deserializeAttachment();
             let targetUserId = meta ? meta.userId : null;
             let targetUid = meta ? meta.uid : null;
 
-            // 5. Logika Smart Routing: Jika ada target, arahkan khusus (Offer, Answer, Candidate)
             if (data.target) {
               if (data.target === targetUserId || data.target === targetUid) {
                 socket.send(messageStr);
               }
             } else {
-              // 6. Jika tidak ada target, broadcast ke seluruh room (Press, Release)
               socket.send(messageStr);
             }
           } catch (e) {
@@ -136,8 +151,6 @@ export class SignalingRoom {
     let senderId = meta ? meta.userId : "unknown";
     
     console.log(`[DISCONNECT] Klien terputus: ${senderId}`);
-    
-    // Perbarui member list ke orang yang tersisa di room
     this.broadcastRoomUsers();
     
     try {
@@ -150,8 +163,6 @@ export class SignalingRoom {
     let senderId = meta ? meta.userId : "unknown";
     
     console.error(`[ERROR] WebSocket error pada ${senderId}:`, error);
-    
-    // Perbarui member list
     this.broadcastRoomUsers();
   }
 }
